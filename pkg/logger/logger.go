@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"go.uber.org/zap"
+	"github.com/golang/glog"
 )
 
 type Logger interface {
@@ -23,41 +23,19 @@ var _ Logger = &logger{}
 type extra map[string]interface{}
 
 type logger struct {
-	zapLogger *zap.Logger
 	context   context.Context
 	level     int32
 	extra     extra
 }
 
-var defaultLogger *zap.Logger
-
-// InitLogger initializes the default logger
-func InitLogger() error {
-	var err error
-	defaultLogger, err = zap.NewProduction()
-	if err != nil {
-		return fmt.Errorf("failed to initialize logger: %w", err)
-	}
-	return nil
-}
-
 // NewLogger creates a new logger instance with a default verbosity of 1
 func NewLogger(ctx context.Context) Logger {
-	if defaultLogger == nil {
-		// Fallback to production logger if not initialized
-		var err error
-		defaultLogger, err = zap.NewProduction()
-		if err != nil {
-			panic(fmt.Sprintf("failed to create fallback logger: %v", err))
-		}
+	logger := &logger{
+		context: ctx,
+		level:   1,
+		extra:   make(extra),
 	}
-
-	return &logger{
-		zapLogger: defaultLogger,
-		context:   ctx,
-		level:     1,
-		extra:     make(extra),
-	}
+	return logger
 }
 
 func (l *logger) prepareLogPrefix(message string, extra extra) string {
@@ -120,17 +98,16 @@ func (l *logger) prepareLogPrefixf(format string, args ...interface{}) string {
 
 func (l *logger) V(level int32) Logger {
 	return &logger{
-		zapLogger: l.zapLogger,
-		context:   l.context,
-		level:     level,
-		extra:     l.extra,
+		context: l.context,
+		level:   level,
+		extra:   l.extra,
 	}
 }
 
-// Infof doesn't trigger error tracking (matching rh-trex behavior)
+// Infof doesn't trigger error tracking (matching Sentinel behavior)
 func (l *logger) Infof(format string, args ...interface{}) {
 	prefixed := l.prepareLogPrefixf(format, args...)
-	l.zapLogger.Info(prefixed)
+	glog.V(glog.Level(l.level)).Infof("%s", prefixed)
 }
 
 func (l *logger) Extra(key string, value interface{}) Logger {
@@ -139,31 +116,36 @@ func (l *logger) Extra(key string, value interface{}) Logger {
 }
 
 func (l *logger) Info(message string) {
-	l.log(message, l.zapLogger.Info)
+	l.log(message, glog.V(glog.Level(l.level)).Infoln)
 }
 
 func (l *logger) Warning(message string) {
-	l.log(message, l.zapLogger.Warn)
+	l.log(message, glog.Warningln)
 }
 
 func (l *logger) Error(message string) {
-	l.log(message, l.zapLogger.Error)
+	l.log(message, glog.Errorln)
 }
 
 func (l *logger) Fatal(message string) {
-	l.log(message, l.zapLogger.Fatal)
+	l.log(message, glog.Fatalln)
 }
 
-func (l *logger) log(message string, logFunc func(string, ...zap.Field)) {
+func (l *logger) log(message string, glogFunc func(args ...interface{})) {
 	prefixed := l.prepareLogPrefix(message, l.extra)
-	logFunc(prefixed)
+	glogFunc(prefixed)
 }
+
+// contextKey is a custom type for context keys to avoid collisions
+type contextKey string
 
 const (
 	// TxIDKey is the context key for transaction ID
-	TxIDKey = "txid"
+	TxIDKey contextKey = "txid"
 	// AdapterIDKey is the context key for adapter ID
-	AdapterIDKey = "adapter_id"
+	AdapterIDKey contextKey = "adapter_id"
 	// ClusterIDKey is the context key for cluster ID
-	ClusterIDKey = "cluster_id"
+	ClusterIDKey contextKey = "cluster_id"
+	// OpIDKey is the context key for operation ID
+	OpIDKey contextKey = "opid"
 )
