@@ -84,7 +84,9 @@ func run() error {
 
 		done := make(chan struct{})
 		go func() {
-			subscriber.Close()
+			if err := subscriber.Close(); err != nil {
+				log.Error(fmt.Sprintf("Error closing subscriber: %v", err))
+			}
 			close(done)
 		}()
 

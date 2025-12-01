@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/cloudevents/sdk-go/v2 v2.16.2
-	github.com/docker/docker v28.5.1+incompatible
+	github.com/docker/go-connections v0.6.0
 	github.com/golang/glog v1.2.5
 	github.com/google/uuid v1.6.0
 	github.com/openshift-hyperfleet/hyperfleet-broker v0.0.1
@@ -40,7 +40,7 @@ require (
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/distribution/reference v0.6.0 // indirect
-	github.com/docker/go-connections v0.6.0 // indirect
+	github.com/docker/docker v28.5.1+incompatible // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.8.4 // indirect
 	github.com/emicklei/go-restful/v3 v3.12.2 // indirect
