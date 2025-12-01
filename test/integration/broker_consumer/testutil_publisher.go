@@ -22,7 +22,11 @@ func publishTestMessages(t *testing.T, topic string, count int) {
 	// Create publisher from environment variables
 	publisher, err := broker.NewPublisher()
 	require.NoError(t, err, "Failed to create publisher")
-	defer publisher.Close()
+	defer func() {
+		if err := publisher.Close(); err != nil {
+			t.Errorf("Error closing publisher: %v", err)
+		}
+	}()
 
 	t.Logf("Publishing %d test messages to topic: %s", count, topic)
 

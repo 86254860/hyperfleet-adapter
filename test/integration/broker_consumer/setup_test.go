@@ -44,7 +44,11 @@ func TestMain(m *testing.M) {
 		println("   Set SKIP_BROKER_TESTS=true to skip these tests")
 		os.Exit(1)
 	}
-	defer provider.Close()
+	defer func() {
+		if err := provider.Close(); err != nil {
+			println("⚠️  Warning: Error closing provider:", err.Error())
+		}
+	}()
 
 	info, err := provider.DaemonHost(ctx)
 	if err != nil {
@@ -72,6 +76,10 @@ func setupTestEnvironment(t *testing.T, projectID, emulatorHost, subscriptionID 
 		t.Fatalf("Failed to create temp config file: %v", err)
 	}
 
+	cleanup = func() {
+		_ = os.Remove(configFile.Name())
+	}
+
 	configContent := fmt.Sprintf(`
 broker:
   type: googlepubsub
@@ -81,20 +89,27 @@ broker:
 `, projectID, subscriptionID)
 
 	if _, err := configFile.WriteString(configContent); err != nil {
-		os.Remove(configFile.Name())
+		cleanup() // Clean up config file
 		t.Fatalf("Failed to write config file: %v", err)
 	}
-	configFile.Close()
+	if err := configFile.Close(); err != nil {
+		cleanup() // Clean up config file
+		t.Fatalf("Failed to close config file: %v", err)
+	}
 
 	// Configure environment
-	os.Setenv("BROKER_CONFIG_FILE", configFile.Name())
-	os.Setenv("PUBSUB_EMULATOR_HOST", emulatorHost)
-	os.Setenv("BROKER_GOOGLEPUBSUB_PROJECT_ID", projectID)
-
-	cleanup = func() {
-		os.Remove(configFile.Name())
+	if err := os.Setenv("BROKER_CONFIG_FILE", configFile.Name()); err != nil {
+		cleanup() // Clean up config file
+		t.Fatalf("Failed to set BROKER_CONFIG_FILE: %v", err)
+	}
+	if err := os.Setenv("PUBSUB_EMULATOR_HOST", emulatorHost); err != nil {
+		cleanup() // Clean up config file
+		t.Fatalf("Failed to set PUBSUB_EMULATOR_HOST: %v", err)
+	}
+	if err := os.Setenv("BROKER_GOOGLEPUBSUB_PROJECT_ID", projectID); err != nil {
+		cleanup() // Clean up config file
+		t.Fatalf("Failed to set BROKER_GOOGLEPUBSUB_PROJECT_ID: %v", err)
 	}
 
 	return configFile.Name(), cleanup
 }
-

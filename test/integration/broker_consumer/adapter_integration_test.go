@@ -46,14 +46,18 @@ func TestAdapterEnvironmentVariable(t *testing.T) {
 		_, cleanupEnv := setupTestEnvironment(t, projectID, emulatorHost, "broker-sub-id-test")
 		defer cleanupEnv()
 
-		os.Setenv("BROKER_SUBSCRIPTION_ID", "broker-sub-id-test")
-		defer os.Unsetenv("BROKER_SUBSCRIPTION_ID")
+		require.NoError(t, os.Setenv("BROKER_SUBSCRIPTION_ID", "broker-sub-id-test"))
+		defer func() {
+			require.NoError(t, os.Unsetenv("BROKER_SUBSCRIPTION_ID"))
+		}()
 
 		// Create subscriber with empty string (forces reading from env)
 		subscriber, subscriptionID, err := broker_consumer.NewSubscriber("")
 		require.NoError(t, err, fmt.Sprintf("Should read BROKER_SUBSCRIPTION_ID from environment: %s", subscriptionID))
 		require.NotNil(t, subscriber)
-		defer subscriber.Close()
+		defer func() {
+			require.NoError(t, subscriber.Close())
+		}()
 	})
 
 	t.Run("returns error when BROKER_SUBSCRIPTION_ID is not set", func(t *testing.T) {
@@ -61,7 +65,7 @@ func TestAdapterEnvironmentVariable(t *testing.T) {
 		_, cleanupEnv := setupTestEnvironment(t, projectID, emulatorHost, "dummy-sub")
 		defer cleanupEnv()
 
-		os.Unsetenv("BROKER_SUBSCRIPTION_ID")
+		require.NoError(t, os.Unsetenv("BROKER_SUBSCRIPTION_ID"))
 
 		// Create subscriber with empty string (forces reading from env)
 		subscriber, subscriptionID, err := broker_consumer.NewSubscriber("")
@@ -95,7 +99,9 @@ func TestAdapterSmokeTest(t *testing.T) {
 	subscriber, subscriptionID, err := broker_consumer.NewSubscriber("adapter-smoke-test")
 	require.NoError(t, err, fmt.Sprintf("Adapter should successfully create subscriber: %s", subscriptionID))
 	require.NotNil(t, subscriber)
-	defer subscriber.Close()
+	defer func() {
+		require.NoError(t, subscriber.Close())
+	}()
 
 	// Channel to signal when a message is received
 	messageReceived := make(chan struct{}, 1)
@@ -225,7 +231,9 @@ func TestAdapterConcurrentSubscribers(t *testing.T) {
 	// Clean up all subscribers (successful or failed) after test completes
 	defer func() {
 		for _, sub := range subscribers {
-			sub.Close()
+			if err := sub.Close(); err != nil {
+				t.Errorf("Error closing subscriber: %v", err)
+			}
 		}
 	}()
 
