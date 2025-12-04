@@ -41,7 +41,7 @@ ctx.Set("provider", "aws")
 ctx.Set("nodeCount", 5)
 
 // Create evaluator
-evaluator := criteria.NewEvaluator(ctx)
+evaluator := criteria.NewEvaluator(ctx, log)
 
 // Evaluate a single condition
 result, err := evaluator.EvaluateCondition(
@@ -132,7 +132,7 @@ ctx.Set("clusterPhase", "Ready")
 ctx.Set("cloudProvider", "aws")
 ctx.Set("vpcId", "vpc-12345")
 
-evaluator := criteria.NewEvaluator(ctx)
+evaluator := criteria.NewEvaluator(ctx, log)
 
 // Validate cluster is in correct phase
 phaseValid, _ := evaluator.EvaluateCondition(
@@ -179,7 +179,7 @@ ctx.Set("resources", map[string]interface{}{
     },
 })
 
-evaluator := criteria.NewEvaluator(ctx)
+evaluator := criteria.NewEvaluator(ctx, log)
 
 // Check namespace is active
 nsActive, _ := evaluator.EvaluateCondition(
@@ -204,7 +204,7 @@ if nsActive && allReady {
 
 ```go
 ctx := criteria.NewEvaluationContext()
-evaluator := criteria.NewEvaluator(ctx)
+evaluator := criteria.NewEvaluator(ctx, log)
 
 // String contains
 ctx.Set("message", "Deployment ready and healthy")
@@ -233,7 +233,7 @@ ctx.Set("nodeCount", 5)
 ctx.Set("minNodes", 1)
 ctx.Set("maxNodes", 10)
 
-evaluator := criteria.NewEvaluator(ctx)
+evaluator := criteria.NewEvaluator(ctx, log)
 
 // Check if within range
 aboveMin, _ := evaluator.EvaluateCondition(
@@ -276,7 +276,7 @@ ctx.Set("cloudProvider", "aws")
 ctx.Set("vpcId", "vpc-12345")
 
 // Evaluate precondition conditions
-evaluator := criteria.NewEvaluator(ctx)
+evaluator := criteria.NewEvaluator(ctx, log)
 conditions := make([]criteria.ConditionDef, len(precond.Conditions))
 for i, cond := range precond.Conditions {
     conditions[i] = criteria.ConditionDef{
@@ -306,7 +306,7 @@ The package provides descriptive error messages:
 ctx := criteria.NewEvaluationContext()
 ctx.Set("count", "not a number")
 
-evaluator := criteria.NewEvaluator(ctx)
+evaluator := criteria.NewEvaluator(ctx, log)
 result, err := evaluator.EvaluateCondition(
     "count",
     criteria.OperatorGreaterThan,

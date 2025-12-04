@@ -1,0 +1,226 @@
+// Package testutil provides common utilities for integration tests.
+package testutil
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+)
+
+// MockRequest represents a recorded HTTP request
+type MockRequest struct {
+	Method string
+	Path   string
+	Body   string
+}
+
+// MockAPIServer creates a test HTTP server that simulates the HyperFleet API.
+// It provides methods to configure responses and inspect recorded requests.
+//
+// TEMPORARY: This mock server is a placeholder for development and early testing.
+// It will be replaced with a real hyperfleet-api container image (via testcontainers)
+// for proper integration testing once the API image is available.
+//
+// TODO: Replace with testcontainers using hyperfleet-api image when available.
+type MockAPIServer struct {
+	server           *httptest.Server
+	mu               sync.Mutex
+	requests         []MockRequest
+	clusterResponse  map[string]interface{}
+	statusResponses  []map[string]interface{}
+	failPrecondition bool
+	failPostAction   bool // If true, POST to /status endpoint returns 500
+	t                *testing.T
+}
+
+// NewMockAPIServer creates a new MockAPIServer for testing.
+//
+// TEMPORARY: This will be replaced with a real hyperfleet-api testcontainer.
+// See MockAPIServer documentation for details.
+//
+// The server simulates common HyperFleet API endpoints:
+//   - GET /clusters/{id} - Returns cluster details
+//   - POST /clusters/{id}/status - Accepts status updates
+//   - GET /validation/availability - Returns availability status
+func NewMockAPIServer(t *testing.T) *MockAPIServer {
+	mock := &MockAPIServer{
+		t:        t,
+		requests: make([]MockRequest, 0),
+		clusterResponse: map[string]interface{}{
+			"metadata": map[string]interface{}{
+				"name": "test-cluster",
+			},
+			"spec": map[string]interface{}{
+				"region":     "us-east-1",
+				"provider":   "aws",
+				"vpc_id":     "vpc-12345",
+				"node_count": 3,
+			},
+			"status": map[string]interface{}{
+				"phase": "Ready",
+			},
+		},
+		statusResponses: make([]map[string]interface{}, 0),
+	}
+
+	mock.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+
+		// Read body
+		var bodyStr string
+		if r.Body != nil {
+			buf := make([]byte, 1024*1024)
+			n, _ := r.Body.Read(buf)
+			bodyStr = string(buf[:n])
+		}
+
+		mock.requests = append(mock.requests, MockRequest{
+			Method: r.Method,
+			Path:   r.URL.Path,
+			Body:   bodyStr,
+		})
+
+		t.Logf("Mock API received: %s %s", r.Method, r.URL.Path)
+		if bodyStr != "" {
+			t.Logf("Body: %s", bodyStr)
+		}
+
+		// Route handling
+		switch {
+		case strings.Contains(r.URL.Path, "/clusters/") && strings.HasSuffix(r.URL.Path, "/status"):
+			// POST /clusters/{id}/status - Store status and return success (or fail if configured)
+			if r.Method == http.MethodPost {
+				// Check if we should fail the post action
+				if mock.failPostAction {
+					w.WriteHeader(http.StatusInternalServerError)
+					_ = json.NewEncoder(w).Encode(map[string]string{
+						"error":   "internal server error",
+						"message": "failed to update cluster status",
+					})
+					return
+				}
+
+				var statusBody map[string]interface{}
+				if err := json.Unmarshal([]byte(bodyStr), &statusBody); err == nil {
+					mock.statusResponses = append(mock.statusResponses, statusBody)
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+				return
+			}
+
+		case strings.Contains(r.URL.Path, "/clusters/"):
+			// GET /clusters/{id} - Return cluster details
+			if r.Method == http.MethodGet {
+				if mock.failPrecondition {
+					w.WriteHeader(http.StatusNotFound)
+					_ = json.NewEncoder(w).Encode(map[string]string{"error": "cluster not found"})
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(mock.clusterResponse)
+				return
+			}
+
+		case strings.Contains(r.URL.Path, "/validation/availability"):
+			// GET validation availability
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode("available")
+			return
+		}
+
+		// Default 404
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
+	}))
+
+	return mock
+}
+
+// Close stops the mock server
+func (m *MockAPIServer) Close() {
+	m.server.Close()
+}
+
+// URL returns the base URL of the mock server
+func (m *MockAPIServer) URL() string {
+	return m.server.URL
+}
+
+// GetRequests returns a copy of all recorded requests
+func (m *MockAPIServer) GetRequests() []MockRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]MockRequest{}, m.requests...)
+}
+
+// GetStatusResponses returns a copy of all status responses received
+func (m *MockAPIServer) GetStatusResponses() []map[string]interface{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]map[string]interface{}{}, m.statusResponses...)
+}
+
+// SetClusterResponse sets the response for GET /clusters/{id}
+func (m *MockAPIServer) SetClusterResponse(resp map[string]interface{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clusterResponse = resp
+}
+
+// SetFailPrecondition configures whether precondition API calls should fail
+func (m *MockAPIServer) SetFailPrecondition(fail bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failPrecondition = fail
+}
+
+// SetFailPostAction configures whether post-action API calls should fail
+func (m *MockAPIServer) SetFailPostAction(fail bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failPostAction = fail
+}
+
+// ClearRequests clears all recorded requests
+func (m *MockAPIServer) ClearRequests() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.requests = make([]MockRequest, 0)
+}
+
+// ClearStatusResponses clears all recorded status responses
+func (m *MockAPIServer) ClearStatusResponses() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.statusResponses = make([]map[string]interface{}, 0)
+}
+
+// Reset resets the mock server to its initial state
+func (m *MockAPIServer) Reset() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.requests = make([]MockRequest, 0)
+	m.statusResponses = make([]map[string]interface{}, 0)
+	m.failPrecondition = false
+	m.failPostAction = false
+	m.clusterResponse = map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"name": "test-cluster",
+		},
+		"spec": map[string]interface{}{
+			"region":     "us-east-1",
+			"provider":   "aws",
+			"vpc_id":     "vpc-12345",
+			"node_count": 3,
+		},
+		"status": map[string]interface{}{
+			"phase": "Ready",
+		},
+	}
+}
+

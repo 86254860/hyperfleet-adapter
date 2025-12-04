@@ -84,10 +84,11 @@ hyperfleet-adapter/
 │   └── logger/           # Structured logging with context support
 ├── internal/
 │   ├── broker_consumer/  # Message broker consumer implementations
-│   ├── config-loader/    # Configuration loading logic
-│   ├── criteria/         # Precondition evaluation
+│   ├── config_loader/    # Configuration loading logic
+│   ├── criteria/         # Precondition and CEL evaluation
+│   ├── executor/         # Event execution engine
 │   ├── hyperfleet_api/   # HyperFleet API client
-│   └── k8s-objects/      # Kubernetes object management
+│   └── k8s_client/       # Kubernetes client wrapper
 ├── test/                 # Integration tests
 ├── charts/               # Helm chart for Kubernetes deployment
 ├── Dockerfile            # Multi-stage Docker build

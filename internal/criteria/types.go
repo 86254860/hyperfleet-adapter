@@ -2,6 +2,8 @@ package criteria
 
 import (
 	"fmt"
+	"reflect"
+	"sync"
 )
 
 // Operator represents a comparison operator
@@ -57,43 +59,140 @@ func OperatorStrings() []string {
 	return result
 }
 
-// EvaluationContext holds the data available for criteria evaluation
+// EvaluationContext holds the data available for criteria evaluation.
+// It is safe for concurrent use by multiple goroutines.
 type EvaluationContext struct {
-	// Data contains all variables available for evaluation
-	Data map[string]interface{}
+	// data contains all variables available for evaluation
+	data map[string]interface{}
+	// version tracks modifications to detect when CEL evaluator needs recreation
+	// This ensures the CEL environment stays in sync with the context data
+	version int64
+	// mu protects concurrent access to data and version
+	mu sync.RWMutex
 }
 
 // NewEvaluationContext creates a new evaluation context
 func NewEvaluationContext() *EvaluationContext {
 	return &EvaluationContext{
-		Data: make(map[string]interface{}),
+		data:    make(map[string]interface{}),
+		version: 0,
 	}
 }
 
-// Set sets a variable in the context
-func (c *EvaluationContext) Set(key string, value interface{}) {
-	c.Data[key] = value
+// Version returns the current version of the context.
+// The version increments with each modification (Set, SetVariablesFromMap, Merge).
+func (c *EvaluationContext) Version() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.version
 }
 
-// Get retrieves a variable from the context
+// Set sets a variable in the context.
+// Only increments version if the value actually changes (optimization to avoid unnecessary CEL env recreation).
+// This method is safe for concurrent use.
+func (c *EvaluationContext) Set(key string, value interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	// Check if value actually changed
+	if existing, ok := c.data[key]; ok && reflect.DeepEqual(existing, value) {
+		return // No change, no version increment
+	}
+	
+	c.data[key] = value
+	c.version++
+}
+
+// Get retrieves a variable from the context.
+// This method is safe for concurrent use.
 func (c *EvaluationContext) Get(key string) (interface{}, bool) {
-	val, ok := c.Data[key]
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	val, ok := c.data[key]
 	return val, ok
 }
 
-// GetNestedField retrieves a nested field using dot notation (e.g., "status.phase")
+// GetNestedField retrieves a nested field using dot notation (e.g., "status.phase").
+// This method is safe for concurrent use.
 func (c *EvaluationContext) GetNestedField(path string) (interface{}, error) {
-	return getNestedField(c.Data, path)
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return getNestedField(c.data, path)
 }
 
-// Merge merges another context into this one
+// Merge merges another context into this one.
+// Only increments version if any value actually changes.
+// This method is safe for concurrent use.
+//
+// To avoid deadlock when two goroutines call ctx1.Merge(ctx2) and ctx2.Merge(ctx1)
+// simultaneously, we first snapshot the other context's data while holding only
+// its read lock, then release it before acquiring our write lock.
 func (c *EvaluationContext) Merge(other *EvaluationContext) {
 	if other == nil {
 		return
 	}
-	for k, v := range other.Data {
-		c.Data[k] = v
+
+	// Step 1: Snapshot other's data while holding only its read lock
+	other.mu.RLock()
+	otherSnapshot := make(map[string]interface{}, len(other.data))
+	for k, v := range other.data {
+		otherSnapshot[k] = v
 	}
+	other.mu.RUnlock()
+
+	// Step 2: Now acquire our write lock and merge the snapshot
+	// No deadlock possible since we don't hold other's lock anymore
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	changed := false
+	for k, v := range otherSnapshot {
+		if existing, ok := c.data[k]; !ok || !reflect.DeepEqual(existing, v) {
+			c.data[k] = v
+			changed = true
+		}
+	}
+
+	if changed {
+		c.version++
+	}
+}
+
+// SetVariablesFromMap sets all key-value pairs from the provided map as evaluation variables.
+// Only increments version if any value actually changes.
+// This method is safe for concurrent use.
+func (c *EvaluationContext) SetVariablesFromMap(data map[string]interface{}) {
+	if data == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	changed := false
+	for k, v := range data {
+		if existing, ok := c.data[k]; !ok || !reflect.DeepEqual(existing, v) {
+			c.data[k] = v
+			changed = true
+		}
+	}
+	
+	if changed {
+		c.version++
+	}
+}
+
+// Data returns a copy of the internal data map.
+// This is used by CEL evaluator for evaluation.
+// Returns a shallow copy to prevent external modification.
+func (c *EvaluationContext) Data() map[string]interface{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	// Return a copy to prevent race conditions during CEL evaluation
+	copy := make(map[string]interface{}, len(c.data))
+	for k, v := range c.data {
+		copy[k] = v
+	}
+	return copy
 }
 
 // EvaluationError represents an error during criteria evaluation
