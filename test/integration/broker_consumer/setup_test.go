@@ -66,8 +66,9 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// setupTestEnvironment creates a temporary broker config file and sets up environment variables
-func setupTestEnvironment(t *testing.T, projectID, emulatorHost, subscriptionID string) (configPath string, cleanup func()) {
+// setupTestEnvironment creates a temporary broker config file and sets up environment variables.
+// If topicID is non-empty, it also creates the topic and subscription in the Pub/Sub emulator.
+func setupTestEnvironment(t *testing.T, projectID, emulatorHost, subscriptionID, topicID string) (configPath string, cleanup func()) {
 	t.Helper()
 
 	// Create temporary broker config file
@@ -101,6 +102,11 @@ broker:
 	t.Setenv("BROKER_CONFIG_FILE", configFile.Name())
 	t.Setenv("PUBSUB_EMULATOR_HOST", emulatorHost)
 	t.Setenv("BROKER_GOOGLEPUBSUB_PROJECT_ID", projectID)
+
+	// Create topic and subscription if topicID is specified
+	if topicID != "" {
+		createTopicAndSubscription(t, projectID, topicID, subscriptionID)
+	}
 
 	return configFile.Name(), cleanup
 }
