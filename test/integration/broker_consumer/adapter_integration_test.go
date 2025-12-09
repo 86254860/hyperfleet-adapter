@@ -42,8 +42,8 @@ func TestAdapterEnvironmentVariable(t *testing.T) {
 	defer cleanup()
 
 	t.Run("uses BROKER_SUBSCRIPTION_ID when set", func(t *testing.T) {
-		// Setup test environment
-		_, cleanupEnv := setupTestEnvironment(t, projectID, emulatorHost, "broker-sub-id-test")
+		// Setup test environment (no topic needed - just testing env var reading)
+		_, cleanupEnv := setupTestEnvironment(t, projectID, emulatorHost, "broker-sub-id-test", "")
 		defer cleanupEnv()
 
 		require.NoError(t, os.Setenv("BROKER_SUBSCRIPTION_ID", "broker-sub-id-test"))
@@ -61,8 +61,8 @@ func TestAdapterEnvironmentVariable(t *testing.T) {
 	})
 
 	t.Run("returns error when BROKER_SUBSCRIPTION_ID is not set", func(t *testing.T) {
-		// Setup test environment
-		_, cleanupEnv := setupTestEnvironment(t, projectID, emulatorHost, "dummy-sub")
+		// Setup test environment (no topic needed - just testing error case)
+		_, cleanupEnv := setupTestEnvironment(t, projectID, emulatorHost, "dummy-sub", "")
 		defer cleanupEnv()
 
 		require.NoError(t, os.Unsetenv("BROKER_SUBSCRIPTION_ID"))
@@ -88,8 +88,9 @@ func TestAdapterSmokeTest(t *testing.T) {
 	projectID, emulatorHost, cleanup := setupPubSubEmulatorContainer(t)
 	defer cleanup()
 
-	// Setup test environment
-	_, cleanupEnv := setupTestEnvironment(t, projectID, emulatorHost, "adapter-smoke-test")
+	// Setup test environment with topic and subscription
+	topic := "smoke-test-topic"
+	_, cleanupEnv := setupTestEnvironment(t, projectID, emulatorHost, "adapter-smoke-test", topic)
 	defer cleanupEnv()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -117,7 +118,6 @@ func TestAdapterSmokeTest(t *testing.T) {
 	}
 
 	// Subscribe through adapter
-	topic := "smoke-test-topic"
 	err = broker_consumer.Subscribe(ctx, subscriber, topic, handler)
 	require.NoError(t, err, "Adapter should successfully subscribe")
 
@@ -169,16 +169,16 @@ func TestAdapterConcurrentSubscribers(t *testing.T) {
 	projectID, emulatorHost, cleanup := setupPubSubEmulatorContainer(t)
 	defer cleanup()
 
-		// Setup test environment
-	_, cleanupEnv := setupTestEnvironment(t, projectID, emulatorHost, "concurrent-test")
-		defer cleanupEnv()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-
-	const numConcurrentSubscribers = 5
+	// Setup test environment with topic and subscription
 	const subscriptionID = "concurrent-test"
 	const topic = "concurrent-test-topic"
+	_, cleanupEnv := setupTestEnvironment(t, projectID, emulatorHost, subscriptionID, topic)
+	defer cleanupEnv()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	const numConcurrentSubscribers = 5
 
 	// Channels to collect results
 	type result struct {

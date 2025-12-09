@@ -3,6 +3,7 @@ module github.com/openshift-hyperfleet/hyperfleet-adapter
 go 1.25.0
 
 require (
+	cloud.google.com/go/pubsub/v2 v2.0.0
 	github.com/cloudevents/sdk-go/v2 v2.16.2
 	github.com/docker/go-connections v0.6.0
 	github.com/golang/glog v1.2.5
@@ -12,6 +13,7 @@ require (
 	github.com/openshift-hyperfleet/hyperfleet-broker v1.0.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.40.0
+	google.golang.org/grpc v1.74.2
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/apimachinery v0.34.1
 	k8s.io/client-go v0.34.1
@@ -25,7 +27,6 @@ require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.7.0 // indirect
 	cloud.google.com/go/iam v1.5.2 // indirect
-	cloud.google.com/go/pubsub/v2 v2.0.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20210617225240-d185dfc1b5a1 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
@@ -132,7 +133,6 @@ require (
 	google.golang.org/genproto v0.0.0-20250603155806-513f23925822 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20250721164621-a45f3dfb1074 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250715232539-7130f93afb79 // indirect
-	google.golang.org/grpc v1.74.2 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	k8s.io/api v0.34.1 // indirect
