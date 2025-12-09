@@ -13,7 +13,7 @@ func TestNewCELEvaluator(t *testing.T) {
 	ctx.Set("status", "Ready")
 	ctx.Set("replicas", 3)
 
-	evaluator, err := NewCELEvaluator(ctx)
+	evaluator, err := NewCELEvaluator(ctx, nil)
 	require.NoError(t, err)
 	require.NotNil(t, evaluator)
 }
@@ -25,7 +25,7 @@ func TestCELEvaluatorEvaluate(t *testing.T) {
 	ctx.Set("provider", "aws")
 	ctx.Set("enabled", true)
 
-	evaluator, err := NewCELEvaluator(ctx)
+	evaluator, err := NewCELEvaluator(ctx, nil)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -98,12 +98,19 @@ func TestCELEvaluatorEvaluate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := evaluator.Evaluate(tt.expression)
+			result, err := evaluator.EvaluateSafe(tt.expression)
 			if tt.wantErr {
-				assert.Error(t, err)
+				// Parse errors are returned as error, eval errors in result
+				if err != nil {
+					assert.Error(t, err)
+					return
+				}
+				// Evaluation error captured in result
+				assert.True(t, result.HasError())
 				return
 			}
 			require.NoError(t, err)
+			assert.False(t, result.HasError())
 			assert.Equal(t, tt.wantMatch, result.Matched)
 			assert.Equal(t, tt.wantValue, result.Value)
 			assert.Equal(t, tt.expression, result.Expression)
@@ -122,17 +129,19 @@ func TestCELEvaluatorWithNestedData(t *testing.T) {
 		},
 	})
 
-	evaluator, err := NewCELEvaluator(ctx)
+	evaluator, err := NewCELEvaluator(ctx, nil)
 	require.NoError(t, err)
 
 	// Test nested field access
-	result, err := evaluator.Evaluate(`cluster.status.phase == "Ready"`)
+	result, err := evaluator.EvaluateSafe(`cluster.status.phase == "Ready"`)
 	require.NoError(t, err)
+	assert.False(t, result.HasError())
 	assert.True(t, result.Matched)
 
 	// Test nested numeric comparison
-	result, err = evaluator.Evaluate(`cluster.spec.replicas > 1`)
+	result, err = evaluator.EvaluateSafe(`cluster.spec.replicas > 1`)
 	require.NoError(t, err)
+	assert.False(t, result.HasError())
 	assert.True(t, result.Matched)
 }
 
@@ -145,11 +154,12 @@ func TestCELEvaluatorEvaluateSafe(t *testing.T) {
 	})
 	ctx.Set("nullValue", nil)
 
-	evaluator, err := NewCELEvaluator(ctx)
+	evaluator, err := NewCELEvaluator(ctx, nil)
 	require.NoError(t, err)
 
 	t.Run("successful evaluation", func(t *testing.T) {
-		result := evaluator.EvaluateSafe(`cluster.status.phase == "Ready"`)
+		result, err := evaluator.EvaluateSafe(`cluster.status.phase == "Ready"`)
+		require.NoError(t, err, "EvaluateSafe should not return error for valid expression")
 		assert.True(t, result.IsSuccess())
 		assert.False(t, result.HasError())
 		assert.True(t, result.Matched)
@@ -157,47 +167,54 @@ func TestCELEvaluatorEvaluateSafe(t *testing.T) {
 		assert.Empty(t, result.ErrorReason)
 	})
 
-	t.Run("missing field returns error in result", func(t *testing.T) {
-		result := evaluator.EvaluateSafe(`cluster.nonexistent.field == "test"`)
+	t.Run("missing field returns error in result (safe)", func(t *testing.T) {
+		// Evaluation errors (missing fields) are captured in result, NOT returned as error
+		result, err := evaluator.EvaluateSafe(`cluster.nonexistent.field == "test"`)
+		require.NoError(t, err, "EvaluateSafe should not return error for evaluation errors")
 		assert.True(t, result.HasError())
 		assert.False(t, result.IsSuccess())
 		assert.False(t, result.Matched)
 		assert.NotNil(t, result.Error)
-		assert.Contains(t, result.ErrorReason, "not found")
+		assert.Contains(t, result.ErrorReason, "no such key")
 	})
 
-	t.Run("access field on null returns error in result", func(t *testing.T) {
-		result := evaluator.EvaluateSafe(`nullValue.field == "test"`)
+	t.Run("access field on null returns error in result (safe)", func(t *testing.T) {
+		result, err := evaluator.EvaluateSafe(`nullValue.field == "test"`)
+		require.NoError(t, err, "EvaluateSafe should not return error for null access")
 		assert.True(t, result.HasError())
 		assert.False(t, result.Matched)
 		assert.NotNil(t, result.Error)
 	})
 
-	t.Run("has() on missing intermediate key returns error", func(t *testing.T) {
+	t.Run("has() on missing intermediate key returns error in result", func(t *testing.T) {
 		// Without preprocessing, has(cluster.nonexistent.field) errors
 		// because cluster.nonexistent doesn't exist
-		result := evaluator.EvaluateSafe(`has(cluster.nonexistent.field)`)
+		result, err := evaluator.EvaluateSafe(`has(cluster.nonexistent.field)`)
+		require.NoError(t, err)
 		assert.True(t, result.HasError())
 		assert.False(t, result.Matched)
-		assert.Contains(t, result.ErrorReason, "not found")
+		assert.Contains(t, result.ErrorReason, "no such key")
 	})
 
 	t.Run("has() on existing intermediate key returns false for missing leaf", func(t *testing.T) {
 		// has(cluster.status.missing) - cluster.status exists, but missing doesn't
-		result := evaluator.EvaluateSafe(`has(cluster.status.missing)`)
+		result, err := evaluator.EvaluateSafe(`has(cluster.status.missing)`)
+		require.NoError(t, err)
 		assert.True(t, result.IsSuccess())
 		assert.False(t, result.Matched) // false because field doesn't exist
 		assert.Nil(t, result.Error)
 	})
 
 	t.Run("empty expression returns true", func(t *testing.T) {
-		result := evaluator.EvaluateSafe("")
+		result, err := evaluator.EvaluateSafe("")
+		require.NoError(t, err)
 		assert.True(t, result.IsSuccess())
 		assert.True(t, result.Matched)
 	})
 
 	t.Run("error result can be used for conditional logic", func(t *testing.T) {
-		result := evaluator.EvaluateSafe(`cluster.missing.path == "value"`)
+		result, err := evaluator.EvaluateSafe(`cluster.missing.path == "value"`)
+		require.NoError(t, err, "Evaluation errors should be captured, not returned")
 
 		// You can use the result for conditional logic
 		var finalValue interface{}
@@ -214,13 +231,21 @@ func TestCELEvaluatorEvaluateSafe(t *testing.T) {
 		assert.Nil(t, finalValue)
 		assert.NotEmpty(t, reason)
 	})
+
+	t.Run("parse error returns actual error (not safe)", func(t *testing.T) {
+		// Parse errors should be returned as actual errors - they indicate bugs
+		result, err := evaluator.EvaluateSafe(`invalid syntax ===`)
+		assert.Error(t, err, "Parse errors should be returned as errors")
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "parse error")
+	})
 }
 
 func TestCELEvaluatorEvaluateBool(t *testing.T) {
 	ctx := NewEvaluationContext()
 	ctx.Set("status", "Ready")
 
-	evaluator, err := NewCELEvaluator(ctx)
+	evaluator, err := NewCELEvaluator(ctx, nil)
 	require.NoError(t, err)
 
 	// True result
@@ -239,7 +264,7 @@ func TestCELEvaluatorEvaluateString(t *testing.T) {
 	ctx.Set("status", "Ready")
 	ctx.Set("name", "test-cluster")
 
-	evaluator, err := NewCELEvaluator(ctx)
+	evaluator, err := NewCELEvaluator(ctx, nil)
 	require.NoError(t, err)
 
 	// String result
@@ -415,7 +440,7 @@ func TestEvaluatorCELIntegration(t *testing.T) {
 	ctx.Set("replicas", 3)
 	ctx.Set("provider", "aws")
 
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 
 	// Test EvaluateCEL
 	result, err := evaluator.EvaluateCEL(`status == "Ready" && replicas > 1`)
@@ -444,7 +469,7 @@ func TestEvaluatorCELIntegration(t *testing.T) {
 
 func TestGetCELExpression(t *testing.T) {
 	ctx := NewEvaluationContext()
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 
 	// Single condition
 	expr, err := evaluator.GetCELExpression("status", OperatorEquals, "Ready")
@@ -507,7 +532,7 @@ func TestEvaluateSafeErrorHandling(t *testing.T) {
 		},
 	})
 
-	evaluator, err := NewCELEvaluator(ctx)
+	evaluator, err := NewCELEvaluator(ctx, nil)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -527,13 +552,13 @@ func TestEvaluateSafeErrorHandling(t *testing.T) {
 			name:        "missing leaf field",
 			expression:  `data.level1.level2.missing == "test"`,
 			wantSuccess: false,
-			wantReason:  "not found",
+			wantReason:  "no such key",
 		},
 		{
 			name:        "missing intermediate field",
 			expression:  `data.level1.nonexistent.value == "test"`,
 			wantSuccess: false,
-			wantReason:  "not found",
+			wantReason:  "no such key",
 		},
 		{
 			name:        "has() on existing path",
@@ -551,13 +576,14 @@ func TestEvaluateSafeErrorHandling(t *testing.T) {
 			name:        "has() on missing intermediate",
 			expression:  `has(data.level1.nonexistent.value)`,
 			wantSuccess: false,
-			wantReason:  "not found",
+			wantReason:  "no such key",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := evaluator.EvaluateSafe(tt.expression)
+			result, err := evaluator.EvaluateSafe(tt.expression)
+			require.NoError(t, err, "EvaluateSafe should not return parse/program errors for valid expressions")
 
 			if tt.wantSuccess {
 				assert.True(t, result.IsSuccess(), "expected success but got error: %v", result.Error)

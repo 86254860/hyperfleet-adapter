@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 )
 
 // EvaluationResult contains the result of evaluating a condition
@@ -37,30 +39,47 @@ type ConditionsResult struct {
 // Evaluator evaluates criteria against an evaluation context
 type Evaluator struct {
 	context *EvaluationContext
+	log     logger.Logger
 
 	// Lazily cached CEL evaluator for repeated CEL evaluations
-	celEval     *CELEvaluator
-	celEvalOnce sync.Once
-	celEvalErr  error
+	// Recreated when context version changes
+	celEval        *CELEvaluator
+	celEvalVersion int64 // Track which context version the CEL eval was created with
+	mu             sync.Mutex
 }
 
 // NewEvaluator creates a new criteria evaluator
-func NewEvaluator(ctx *EvaluationContext) *Evaluator {
+func NewEvaluator(ctx *EvaluationContext, log logger.Logger) *Evaluator {
 	if ctx == nil {
 		ctx = NewEvaluationContext()
 	}
 	return &Evaluator{
 		context: ctx,
+		log:     log,
 	}
 }
 
 // getCELEvaluator returns a cached CEL evaluator, creating it lazily on first use.
-// This avoids creating a new CEL environment for each evaluation.
+// If the context has been modified (version changed), the CEL evaluator is recreated
+// to ensure the CEL environment stays in sync with the context data.
+// This prevents "undeclared reference" errors when variables are added after first evaluation.
 func (e *Evaluator) getCELEvaluator() (*CELEvaluator, error) {
-	e.celEvalOnce.Do(func() {
-		e.celEval, e.celEvalErr = NewCELEvaluator(e.context)
-	})
-	return e.celEval, e.celEvalErr
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	currentVersion := e.context.Version()
+	
+	// Recreate CEL evaluator if context changed or not yet created
+	if e.celEval == nil || e.celEvalVersion != currentVersion {
+		celEval, err := NewCELEvaluator(e.context, e.log)
+		if err != nil {
+			return nil, err
+		}
+		e.celEval = celEval
+		e.celEvalVersion = currentVersion
+	}
+	
+	return e.celEval, nil
 }
 
 // GetField extracts a field value from the context using dot notation
@@ -128,34 +147,19 @@ func (e *Evaluator) EvaluateConditionWithResult(field string, operator Operator,
 
 	// Evaluate based on operator
 	var matched bool
-	switch operator {
-	case OperatorEquals:
-		matched, err = evaluateEquals(fieldValue, value)
-	case OperatorNotEquals:
-		matched, err = evaluateEquals(fieldValue, value)
-		matched = !matched
-	case OperatorIn:
-		matched, err = evaluateIn(fieldValue, value)
-	case OperatorNotIn:
-		matched, err = evaluateIn(fieldValue, value)
-		matched = !matched
-	case OperatorContains:
-		matched, err = evaluateContains(fieldValue, value)
-	case OperatorGreaterThan:
-		matched, err = evaluateGreaterThan(fieldValue, value)
-	case OperatorLessThan:
-		matched, err = evaluateLessThan(fieldValue, value)
-	case OperatorExists:
+	if operator == OperatorExists {
+		// Exists is special - only checks fieldValue, no expected value
 		matched = evaluateExists(fieldValue)
-	default:
+	} else if evalFn, ok := operatorFuncs[operator]; ok {
+		matched, err = evalFn(fieldValue, value)
+		if err != nil {
+			return nil, err
+		}
+	} else {
 		return nil, &EvaluationError{
 			Field:   field,
 			Message: fmt.Sprintf("unsupported operator: %s", operator),
 		}
-	}
-
-	if err != nil {
-		return nil, err
 	}
 
 	result.Matched = matched
@@ -231,31 +235,35 @@ func (e *Evaluator) ExtractFieldsOrDefault(fields map[string]interface{}) map[st
 	return extracted
 }
 
-// EvaluateCEL evaluates a CEL expression against the current context
-func (e *Evaluator) EvaluateCEL(expression string) (*CELResult, error) {
+// withCELEvaluator gets the CEL evaluator and applies a function to it
+func withCELEvaluator[T any](e *Evaluator, fn func(*CELEvaluator) (T, error)) (T, error) {
+	var zero T
 	celEval, err := e.getCELEvaluator()
 	if err != nil {
-		return nil, err
+		return zero, err
 	}
-	return celEval.Evaluate(expression)
+	return fn(celEval)
+}
+
+// EvaluateCEL evaluates a CEL expression against the current context
+func (e *Evaluator) EvaluateCEL(expression string) (*CELResult, error) {
+	return withCELEvaluator(e, func(c *CELEvaluator) (*CELResult, error) {
+		return c.EvaluateSafe(expression)
+	})
 }
 
 // EvaluateCELBool evaluates a CEL expression that returns a boolean
 func (e *Evaluator) EvaluateCELBool(expression string) (bool, error) {
-	celEval, err := e.getCELEvaluator()
-	if err != nil {
-		return false, err
-	}
-	return celEval.EvaluateBool(expression)
+	return withCELEvaluator(e, func(c *CELEvaluator) (bool, error) {
+		return c.EvaluateBool(expression)
+	})
 }
 
 // EvaluateCELString evaluates a CEL expression that returns a string
 func (e *Evaluator) EvaluateCELString(expression string) (string, error) {
-	celEval, err := e.getCELEvaluator()
-	if err != nil {
-		return "", err
-	}
-	return celEval.EvaluateString(expression)
+	return withCELEvaluator(e, func(c *CELEvaluator) (string, error) {
+		return c.EvaluateString(expression)
+	})
 }
 
 // EvaluateConditionAsCEL converts a condition to CEL and evaluates it
@@ -286,7 +294,6 @@ func (e *Evaluator) GetCELExpressionForConditions(conditions []ConditionDef) (st
 	return ConditionsToCEL(conditions)
 }
 
-// ConditionDef represents a condition definition
 // ConditionDef defines a condition to evaluate
 type ConditionDef struct {
 	Field    string
@@ -307,6 +314,28 @@ func (c ConditionDefJSON) ToConditionDef() ConditionDef {
 		Field:    c.Field,
 		Operator: Operator(c.Operator),
 		Value:    c.Value,
+	}
+}
+
+// evalFunc is a function type for operator evaluation
+type evalFunc func(fieldValue, expected interface{}) (bool, error)
+
+// operatorFuncs maps operators to their evaluation functions
+var operatorFuncs = map[Operator]evalFunc{
+	OperatorEquals:      evaluateEquals,
+	OperatorNotEquals:   negate(evaluateEquals),
+	OperatorIn:          evaluateIn,
+	OperatorNotIn:       negate(evaluateIn),
+	OperatorContains:    evaluateContains,
+	OperatorGreaterThan: evaluateGreaterThan,
+	OperatorLessThan:    evaluateLessThan,
+}
+
+// negate wraps an evalFunc to return the opposite result
+func negate(fn evalFunc) evalFunc {
+	return func(a, b interface{}) (bool, error) {
+		result, err := fn(a, b)
+		return !result, err
 	}
 }
 
@@ -477,31 +506,14 @@ func compareNumbers(a, b interface{}, compare func(float64, float64) bool) (bool
 
 // toFloat64 converts various numeric types to float64
 func toFloat64(value interface{}) (float64, error) {
-	switch v := value.(type) {
-	case float64:
-		return v, nil
-	case float32:
-		return float64(v), nil
-	case int:
-		return float64(v), nil
-	case int8:
-		return float64(v), nil
-	case int16:
-		return float64(v), nil
-	case int32:
-		return float64(v), nil
-	case int64:
-		return float64(v), nil
-	case uint:
-		return float64(v), nil
-	case uint8:
-		return float64(v), nil
-	case uint16:
-		return float64(v), nil
-	case uint32:
-		return float64(v), nil
-	case uint64:
-		return float64(v), nil
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Float32, reflect.Float64:
+		return v.Float(), nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(v.Int()), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return float64(v.Uint()), nil
 	default:
 		return 0, fmt.Errorf("cannot convert %T to float64", value)
 	}

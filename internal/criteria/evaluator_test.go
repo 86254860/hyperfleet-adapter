@@ -11,7 +11,7 @@ import (
 func TestNewEvaluationContext(t *testing.T) {
 	ctx := NewEvaluationContext()
 	assert.NotNil(t, ctx)
-	assert.NotNil(t, ctx.Data)
+	assert.NotNil(t, ctx.Data())
 }
 
 func TestEvaluationContextSetGet(t *testing.T) {
@@ -108,6 +108,50 @@ func TestEvaluationContextMerge(t *testing.T) {
 
 	val, _ = ctx1.Get("key3")
 	assert.Equal(t, "value3", val)
+}
+
+// TestEvaluationContextMergeConcurrent verifies that concurrent cross-merges
+// don't cause deadlock. Previously, if goroutine A called ctx1.Merge(ctx2) while
+// goroutine B called ctx2.Merge(ctx1), a deadlock could occur due to lock ordering.
+// The fix snapshots other's data before acquiring the write lock.
+func TestEvaluationContextMergeConcurrent(t *testing.T) {
+	ctx1 := NewEvaluationContext()
+	ctx2 := NewEvaluationContext()
+
+	// Initialize with different data
+	ctx1.Set("from1", "value1")
+	ctx2.Set("from2", "value2")
+
+	done := make(chan bool, 2)
+
+	// Goroutine A: ctx1.Merge(ctx2)
+	go func() {
+		for i := 0; i < 100; i++ {
+			ctx1.Merge(ctx2)
+		}
+		done <- true
+	}()
+
+	// Goroutine B: ctx2.Merge(ctx1) - would deadlock with old implementation
+	go func() {
+		for i := 0; i < 100; i++ {
+			ctx2.Merge(ctx1)
+		}
+		done <- true
+	}()
+
+	// Wait for both goroutines (with timeout via test timeout)
+	<-done
+	<-done
+
+	// Both contexts should have both keys
+	val1, ok1 := ctx1.Get("from2")
+	assert.True(t, ok1, "ctx1 should have from2 after merge")
+	assert.Equal(t, "value2", val1)
+
+	val2, ok2 := ctx2.Get("from1")
+	assert.True(t, ok2, "ctx2 should have from1 after merge")
+	assert.Equal(t, "value1", val2)
 }
 
 func TestEvaluateEquals(t *testing.T) {
@@ -476,7 +520,7 @@ func TestEvaluatorEvaluateCondition(t *testing.T) {
 		"phase": "Active",
 	})
 
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 
 	tests := []struct {
 		name      string
@@ -563,7 +607,7 @@ func TestEvaluatorEvaluateConditions(t *testing.T) {
 	ctx.Set("cloudProvider", "aws")
 	ctx.Set("vpcId", "vpc-12345")
 
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 
 	tests := []struct {
 		name       string
@@ -725,7 +769,7 @@ func TestEvaluationError(t *testing.T) {
 }
 
 func TestNewEvaluatorWithNilContext(t *testing.T) {
-	evaluator := NewEvaluator(nil)
+	evaluator := NewEvaluator(nil, nil)
 	require.NotNil(t, evaluator)
 	require.NotNil(t, evaluator.context)
 }
@@ -741,7 +785,7 @@ func TestGetField(t *testing.T) {
 		},
 	})
 
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 
 	// Get existing field
 	value, err := evaluator.GetField("cluster.metadata.name")
@@ -766,7 +810,7 @@ func TestGetFieldOrDefault(t *testing.T) {
 		},
 	})
 
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 
 	// Get existing field
 	value := evaluator.GetFieldOrDefault("cluster.metadata.name", "default")
@@ -787,7 +831,7 @@ func TestEvaluateConditionWithResult(t *testing.T) {
 	ctx.Set("replicas", 3)
 	ctx.Set("provider", "aws")
 
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 
 	// Test equals - matched
 	result, err := evaluator.EvaluateConditionWithResult("status", OperatorEquals, "Ready")
@@ -823,7 +867,7 @@ func TestEvaluateConditionsWithResult(t *testing.T) {
 	ctx.Set("replicas", 3)
 	ctx.Set("provider", "aws")
 
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 
 	// All conditions pass
 	conditions := []ConditionDef{
@@ -874,7 +918,7 @@ func TestExtractFields(t *testing.T) {
 		},
 	})
 
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 
 	// Extract multiple fields
 	fields := []string{"cluster.metadata.name", "cluster.metadata.namespace", "cluster.status.phase"}
@@ -900,7 +944,7 @@ func TestExtractFieldsSafe(t *testing.T) {
 		"status": nil, // null value
 	})
 
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 
 	fields := []string{
 		"cluster.metadata.name",  // exists
@@ -925,7 +969,7 @@ func TestExtractFieldsOrDefault(t *testing.T) {
 		},
 	})
 
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 
 	fields := map[string]interface{}{
 		"cluster.metadata.name": "default-name",
@@ -971,7 +1015,7 @@ func TestNullHandling(t *testing.T) {
 		},
 	})
 
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 
 	t.Run("access field on null parent", func(t *testing.T) {
 		// Accessing cluster.status.phase when status is null
@@ -1025,7 +1069,7 @@ func TestDeepNullPath(t *testing.T) {
 		},
 	})
 
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 
 	// a.b.c is null, so a.b.c.d.e.f should fail gracefully
 	_, err := evaluator.GetField("a.b.c.d.e.f")

@@ -60,7 +60,7 @@ func TestConfigLoadAndCriteriaEvaluation(t *testing.T) {
 		},
 	})
 
-	evaluator := criteria.NewEvaluator(ctx)
+	evaluator := criteria.NewEvaluator(ctx, nil)
 
 	t.Run("evaluate precondition conditions from config", func(t *testing.T) {
 		// Find the clusterStatus precondition
@@ -147,7 +147,7 @@ func TestConfigConditionsToCEL(t *testing.T) {
 		ctx.Set("cloudProvider", "aws")
 		ctx.Set("vpcId", "vpc-12345")
 
-		evaluator := criteria.NewEvaluator(ctx)
+		evaluator := criteria.NewEvaluator(ctx, nil)
 
 		conditions := make([]criteria.ConditionDef, len(precond.Conditions))
 		for i, cond := range precond.Conditions {
@@ -180,7 +180,7 @@ func TestConfigWithFailingPreconditions(t *testing.T) {
 		ctx.Set("cloudProvider", "aws")
 		ctx.Set("vpcId", "vpc-12345")
 
-		evaluator := criteria.NewEvaluator(ctx)
+		evaluator := criteria.NewEvaluator(ctx, nil)
 
 		conditions := make([]criteria.ConditionDef, len(precond.Conditions))
 		for i, cond := range precond.Conditions {
@@ -203,7 +203,7 @@ func TestConfigWithFailingPreconditions(t *testing.T) {
 		ctx.Set("cloudProvider", "onprem") // Not in allowed list
 		ctx.Set("vpcId", "vpc-12345")
 
-		evaluator := criteria.NewEvaluator(ctx)
+		evaluator := criteria.NewEvaluator(ctx, nil)
 
 		conditions := make([]criteria.ConditionDef, len(precond.Conditions))
 		for i, cond := range precond.Conditions {
@@ -225,7 +225,7 @@ func TestConfigWithFailingPreconditions(t *testing.T) {
 		ctx.Set("cloudProvider", "aws")
 		// vpcId not set - should fail exists check
 
-		evaluator := criteria.NewEvaluator(ctx)
+		evaluator := criteria.NewEvaluator(ctx, nil)
 
 		// Just check the vpcId exists condition
 		result := evaluator.EvaluateConditionSafe("vpcId", criteria.OperatorExists, true)
@@ -312,7 +312,7 @@ func TestConfigPostProcessingEvaluation(t *testing.T) {
 			},
 		})
 
-		evaluator := criteria.NewEvaluator(ctx)
+		evaluator := criteria.NewEvaluator(ctx, nil)
 
 		// Test accessing nested K8s resource data
 		t.Run("access namespace status", func(t *testing.T) {
@@ -374,7 +374,7 @@ func TestConfigNullSafetyWithMissingResources(t *testing.T) {
 			"clusterController": nil, // Not created yet
 		})
 
-		evaluator := criteria.NewEvaluator(ctx)
+		evaluator := criteria.NewEvaluator(ctx, nil)
 
 		// Safe access to missing resource
 		value := evaluator.GetFieldSafe("resources.clusterController.status.readyReplicas")
@@ -404,7 +404,7 @@ func TestConfigNullSafetyWithMissingResources(t *testing.T) {
 			},
 		})
 
-		evaluator := criteria.NewEvaluator(ctx)
+		evaluator := criteria.NewEvaluator(ctx, nil)
 
 		// Should handle null status gracefully
 		value := evaluator.GetFieldOrDefault("resources.clusterController.status.readyReplicas", -1)

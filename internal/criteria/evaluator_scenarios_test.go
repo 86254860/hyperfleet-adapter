@@ -42,7 +42,7 @@ func TestRealWorldScenario(t *testing.T) {
 	ctx.Set("vpcId", "vpc-12345")
 	ctx.Set("nodeCount", 5)
 	
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 	
 	// Test precondition conditions from the template
 	t.Run("clusterPhase in valid phases", func(t *testing.T) {
@@ -116,7 +116,7 @@ func TestResourceStatusEvaluation(t *testing.T) {
 	
 	ctx.Set("resources", resources)
 	
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 	
 	t.Run("namespace is active", func(t *testing.T) {
 		result, err := evaluator.EvaluateCondition(
@@ -133,7 +133,7 @@ func TestResourceStatusEvaluation(t *testing.T) {
 		localCtx := NewEvaluationContext()
 		localCtx.Set("replicas", 3)
 		localCtx.Set("readyReplicas", 3)
-		localEvaluator := NewEvaluator(localCtx)
+		localEvaluator := NewEvaluator(localCtx, nil)
 
 		result, err := localEvaluator.EvaluateCondition(
 			"replicas",
@@ -166,7 +166,7 @@ func TestComplexNestedConditions(t *testing.T) {
 		},
 	})
 	
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 	
 	t.Run("adapter execution successful", func(t *testing.T) {
 		result, err := evaluator.EvaluateCondition(
@@ -206,7 +206,7 @@ func TestMapKeyContainment(t *testing.T) {
 		"owner":       "team-a",
 	})
 
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 
 	t.Run("map contains key - found", func(t *testing.T) {
 		result, err := evaluator.EvaluateCondition(
@@ -257,7 +257,7 @@ func TestTerminatingClusterScenario(t *testing.T) {
 	ctx.Set("cloudProvider", "aws")
 	ctx.Set("vpcId", "vpc-12345")
 	
-	evaluator := NewEvaluator(ctx)
+	evaluator := NewEvaluator(ctx, nil)
 	
 	t.Run("terminating cluster fails preconditions", func(t *testing.T) {
 		// Cluster in "Terminating" phase should NOT be in allowed phases
@@ -337,7 +337,7 @@ func TestNodeCountValidation(t *testing.T) {
 			ctx.Set("minNodes", tt.minNodes)
 			ctx.Set("maxNodes", tt.maxNodes)
 
-			evaluator := NewEvaluator(ctx)
+			evaluator := NewEvaluator(ctx, nil)
 
 			// Check if nodeCount >= minNodes
 			result1, err := evaluator.EvaluateCondition(

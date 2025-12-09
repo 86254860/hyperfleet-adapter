@@ -6,16 +6,18 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/golang/glog"
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
+	apperrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 )
 
 // CELEvaluator evaluates CEL expressions against a context
 type CELEvaluator struct {
 	env     *cel.Env
 	context *EvaluationContext
+	log     logger.Logger
 }
 
 // CELResult contains the result of evaluating a CEL expression.
@@ -27,8 +29,9 @@ type CELResult struct {
 	// Matched indicates if the result is boolean true (for conditions)
 	// Always false when Error is set
 	Matched bool
-	// Type is the CEL type of the result ("error" when evaluation failed)
-	Type string
+	// ValueType is the CEL type of Value (e.g., "bool", "string", "int", "map", "list")
+	// Empty when evaluation failed
+	ValueType string
 	// Expression is the original expression that was evaluated
 	Expression string
 	// Error indicates if evaluation failed (nil if successful)
@@ -49,7 +52,7 @@ func (r *CELResult) IsSuccess() bool {
 }
 
 // NewCELEvaluator creates a new CEL evaluator with the given context
-func NewCELEvaluator(ctx *EvaluationContext) (*CELEvaluator, error) {
+func NewCELEvaluator(ctx *EvaluationContext, log logger.Logger) (*CELEvaluator, error) {
 	if ctx == nil {
 		ctx = NewEvaluationContext()
 	}
@@ -59,24 +62,27 @@ func NewCELEvaluator(ctx *EvaluationContext) (*CELEvaluator, error) {
 
 	env, err := cel.NewEnv(options...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
+		return nil, apperrors.NewCELEnvError("failed to initialize", err)
 	}
 
 	return &CELEvaluator{
 		env:     env,
 		context: ctx,
+		log:     log,
 	}, nil
 }
 
 // buildCELOptions creates CEL environment options from the context
-// Variables are dynamically registered based on what's in ctx.Data
+// Variables are dynamically registered based on what's in ctx.Data()
 func buildCELOptions(ctx *EvaluationContext) []cel.EnvOption {
 	options := make([]cel.EnvOption, 0)
 
 	// Enable optional types for optional chaining syntax (e.g., a.?b.?c)
 	options = append(options, cel.OptionalTypes())
 
-	for key, value := range ctx.Data {
+	// Get a snapshot of the data for thread safety
+	data := ctx.Data()
+	for key, value := range data {
 		celType := inferCELType(value)
 		options = append(options, cel.Variable(key, celType))
 	}
@@ -110,148 +116,146 @@ func inferCELType(value interface{}) *cel.Type {
 	}
 }
 
-// Evaluate evaluates a CEL expression and returns the result.
-// Returns an error if evaluation fails. Use EvaluateSafe for error-tolerant evaluation.
-func (e *CELEvaluator) Evaluate(expression string) (*CELResult, error) {
-	result := e.EvaluateSafe(expression)
-	if result.Error != nil {
-		return nil, result.Error
-	}
-	return result, nil
-}
-
-// EvaluateSafe evaluates a CEL expression and captures any errors in the result.
-// This never returns an error - all errors are captured in CELResult.Error and CELResult.ErrorReason.
-// Use this when you want to handle evaluation failures gracefully at a higher level.
+// EvaluateSafe evaluates a CEL expression with safe handling for evaluation errors.
 //
-// Common error reasons include:
+// Error handling strategy:
+//   - Parse errors: returned as error (fail fast - indicates bug in expression)
+//   - Program creation errors: returned as error (fail fast - indicates invalid expression)
+//   - Evaluation errors: captured in CELResult.Error (safe - data might not exist yet)
+//
+// Use this when you expect that some fields might not exist or be null, and you want
+// to handle those cases gracefully (e.g., treat as "not matched") rather than failing.
+//
+// Common evaluation error reasons captured in result:
 //   - "field not found": when accessing a key that doesn't exist (e.g., data.missing.field)
 //   - "null value access": when accessing a field on a null value
 //   - "type mismatch": when operations are applied to incompatible types
-func (e *CELEvaluator) EvaluateSafe(expression string) *CELResult {
+func (e *CELEvaluator) EvaluateSafe(expression string) (*CELResult, error) {
 	expression = strings.TrimSpace(expression)
 	if expression == "" {
 		return &CELResult{
 			Value:      true,
 			Matched:    true,
-			Type:       "bool",
+			ValueType:  "bool",
 			Expression: expression,
-		}
+		}, nil
 	}
 
-	// Parse the expression
+	// Parse the expression - errors here indicate bugs in configuration
 	ast, issues := e.env.Parse(expression)
 	if issues != nil && issues.Err() != nil {
-		return &CELResult{
-			Value:       nil,
-			Matched:     false,
-			Type:        "error",
-			Expression:  expression,
-			Error:       fmt.Errorf("CEL parse error: %w", issues.Err()),
-			ErrorReason: fmt.Sprintf("parse error: %s", issues.Err()),
-		}
+		return nil, apperrors.NewCELParseError(expression, issues.Err())
 	}
 
-	// Type-check the expression (optional, may fail for dynamic types)
-	checked, issues := e.env.Check(ast)
-	if issues != nil && issues.Err() != nil {
-		glog.V(2).Infof("CEL type check failed for expression %q (using parsed AST): %v", expression, issues.Err())
-		// Use parsed AST if type checking fails (common with dynamic types)
-		checked = ast
+	// Safety check: ensure AST is valid after parse
+	if ast == nil {
+		return nil, apperrors.NewCELParseError(expression, nil)
 	}
 
-	// Create the program
-	prg, err := e.env.Program(checked)
+	// Create the program directly from parsed AST
+	// Skip type-check: we use DynType, so type errors are caught during evaluation
+	prg, err := e.env.Program(ast)
 	if err != nil {
-		return &CELResult{
-			Value:       nil,
-			Matched:     false,
-			Type:        "error",
-			Expression:  expression,
-			Error:       fmt.Errorf("CEL program creation error: %w", err),
-			ErrorReason: fmt.Sprintf("program error: %s", err),
-		}
+		return nil, apperrors.NewCELProgramError(expression, err)
 	}
 
-	// Evaluate the expression
-	out, _, err := prg.Eval(e.context.Data)
+	// Evaluate the expression - errors here are SAFE (data might not exist yet)
+	// Get a snapshot of the data for thread-safe evaluation
+	out, _, err := prg.Eval(e.context.Data())
 	if err != nil {
-		// Capture evaluation error - this includes "no such key" errors
-		// Error is logged at debug level and captured in result for executor to handle
-		errorReason := categorizeEvalError(err)
-		glog.V(2).Infof("CEL evaluation failed for %q: %s (%v)", expression, errorReason, err)
+		// Capture evaluation error in result - this is the "safe" part
+		// These errors are expected when data fields don't exist yet
+		if e.log != nil {
+			e.log.V(2).Infof("CEL evaluation failed for %q: %v", expression, err)
+		}
 		return &CELResult{
 			Value:       nil,
 			Matched:     false,
-			Type:        "error",
 			Expression:  expression,
-			Error:       fmt.Errorf("CEL evaluation error: %w", err),
-			ErrorReason: errorReason,
-		}
+			Error:       apperrors.NewCELEvalError(expression, err),
+			ErrorReason: err.Error(),
+		}, nil // No error returned - evaluation errors are captured in result
 	}
 
 	// Convert result
 	result := &CELResult{
 		Value:      out.Value(),
-		Type:       out.Type().TypeName(),
+		ValueType:  out.Type().TypeName(),
 		Expression: expression,
 	}
 
 	// Check if result is boolean true
+	// This is the most common use case for CEL expressions
+	// has("result.value") will result the value to bool
 	if boolVal, ok := out.Value().(bool); ok {
 		result.Matched = boolVal
 	} else {
 		// Non-boolean results are considered "matched" if not nil/empty
+		// This can used to dig values from the result
+		// For example, if the result is a map, you can use result.value.key to get the value of the key
 		result.Matched = !isEmptyValue(out)
 	}
 
-	return result
+	return result, nil
 }
 
-// categorizeEvalError provides a human-readable error reason for common CEL evaluation errors
-func categorizeEvalError(err error) string {
-	errStr := err.Error()
-	if strings.Contains(errStr, "no such key") {
-		return "field not found"
+// EvaluateAs evaluates a CEL expression and returns the result as the specified type.
+// This is a type-safe generic function that handles all type assertions properly.
+// Returns an error if:
+//   - Parse/program error occurs (from EvaluateSafe)
+//   - Evaluation error occurs (captured in result.Error)
+//   - Type assertion fails (returns CELTypeMismatchError)
+func EvaluateAs[T any](e *CELEvaluator, expression string) (T, error) {
+	var zero T
+	result, err := e.EvaluateSafe(expression)
+	if err != nil {
+		return zero, err
 	}
-	if strings.Contains(errStr, "no such attribute") {
-		return "attribute not found"
+	if result.Error != nil {
+		return zero, result.Error
 	}
-	if strings.Contains(errStr, "null") || strings.Contains(errStr, "nil") {
-		return "null value access"
+
+	val, ok := result.Value.(T)
+	if !ok {
+		return zero, apperrors.NewCELTypeMismatchError(expression,
+			fmt.Sprintf("%T", zero), fmt.Sprintf("%T", result.Value))
 	}
-	if strings.Contains(errStr, "type") {
-		return "type mismatch"
-	}
-	return fmt.Sprintf("evaluation failed: %s", errStr)
+	return val, nil
 }
 
-// EvaluateBool evaluates a CEL expression that should return a boolean
+// EvaluateBool evaluates a CEL expression that should return a boolean.
 func (e *CELEvaluator) EvaluateBool(expression string) (bool, error) {
-	result, err := e.Evaluate(expression)
-	if err != nil {
-		return false, err
-	}
-
-	if boolVal, ok := result.Value.(bool); ok {
-		return boolVal, nil
-	}
-
-	return result.Matched, nil
+	return EvaluateAs[bool](e, expression)
 }
 
-// EvaluateString evaluates a CEL expression that should return a string
+// EvaluateString evaluates a CEL expression that should return a string.
 func (e *CELEvaluator) EvaluateString(expression string) (string, error) {
-	result, err := e.Evaluate(expression)
-	if err != nil {
-		return "", err
-	}
+	return EvaluateAs[string](e, expression)
+}
 
-	if strVal, ok := result.Value.(string); ok {
-		return strVal, nil
-	}
+// EvaluateInt evaluates a CEL expression that should return an int64.
+func (e *CELEvaluator) EvaluateInt(expression string) (int64, error) {
+	return EvaluateAs[int64](e, expression)
+}
 
-	return fmt.Sprintf("%v", result.Value), nil
+// EvaluateUint evaluates a CEL expression that should return a uint64.
+func (e *CELEvaluator) EvaluateUint(expression string) (uint64, error) {
+	return EvaluateAs[uint64](e, expression)
+}
+
+// EvaluateFloat64 evaluates a CEL expression that should return a float64.
+func (e *CELEvaluator) EvaluateFloat64(expression string) (float64, error) {
+	return EvaluateAs[float64](e, expression)
+}
+
+// EvaluateArray evaluates a CEL expression that should return a slice.
+func (e *CELEvaluator) EvaluateArray(expression string) ([]any, error) {
+	return EvaluateAs[[]any](e, expression)
+}
+
+// EvaluateMap evaluates a CEL expression that should return a map.
+func (e *CELEvaluator) EvaluateMap(expression string) (map[string]any, error) {
+	return EvaluateAs[map[string]any](e, expression)
 }
 
 // isEmptyValue checks if a CEL value is empty/nil
@@ -313,7 +317,7 @@ func ConditionToCEL(field, operator string, value interface{}) (string, error) {
 		// For top-level variables, check not null and not empty string
 		return fmt.Sprintf("(%s != null && %s != \"\")", field, field), nil
 	default:
-		return "", fmt.Errorf("unsupported operator for CEL conversion: %s", operator)
+		return "", apperrors.NewCELUnsupportedOperatorError(operator)
 	}
 }
 
@@ -359,7 +363,7 @@ func formatCELValue(value interface{}) (string, error) {
 			}
 			return fmt.Sprintf("[%s]", strings.Join(items, ", ")), nil
 		default:
-			return "", fmt.Errorf("unsupported type for CEL formatting: %T", value)
+			return "", apperrors.NewCELUnsupportedTypeError(fmt.Sprintf("%T", value))
 		}
 	}
 }
@@ -374,7 +378,7 @@ func ConditionsToCEL(conditions []ConditionDef) (string, error) {
 	for i, cond := range conditions {
 		expr, err := ConditionToCEL(cond.Field, string(cond.Operator), cond.Value)
 		if err != nil {
-			return "", fmt.Errorf("failed to convert condition %d: %w", i, err)
+			return "", apperrors.NewCELConditionConversionError(i, err)
 		}
 		expressions[i] = "(" + expr + ")"
 	}

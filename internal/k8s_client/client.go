@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
+	apperrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -63,14 +63,14 @@ func NewClient(ctx context.Context, config ClientConfig, log logger.Logger) (*Cl
 		// Use in-cluster config with ServiceAccount
 		restConfig, err = rest.InClusterConfig()
 		if err != nil {
-			return nil, errors.KubernetesError("failed to create in-cluster config: %v", err)
+			return nil, apperrors.KubernetesError("failed to create in-cluster config: %v", err)
 		}
 		log.Info("Using in-cluster Kubernetes configuration (ServiceAccount)")
 	} else {
 		// Use kubeconfig file for local development or remote access
 		restConfig, err = clientcmd.BuildConfigFromFlags("", config.KubeConfigPath)
 		if err != nil {
-			return nil, errors.KubernetesError("failed to load kubeconfig from %s: %v", config.KubeConfigPath, err)
+			return nil, apperrors.KubernetesError("failed to load kubeconfig from %s: %v", config.KubeConfigPath, err)
 		}
 		log.Infof("Using kubeconfig from: %s", config.KubeConfigPath)
 	}
@@ -91,7 +91,7 @@ func NewClient(ctx context.Context, config ClientConfig, log logger.Logger) (*Cl
 	// This provides automatic caching, better performance, and cleaner API
 	k8sClient, err := client.New(restConfig, client.Options{})
 	if err != nil {
-		return nil, errors.KubernetesError("failed to create kubernetes client: %v", err)
+		return nil, apperrors.KubernetesError("failed to create kubernetes client: %v", err)
 	}
 
 	return &Client{
@@ -105,7 +105,7 @@ func NewClient(ctx context.Context, config ClientConfig, log logger.Logger) (*Cl
 func NewClientFromConfig(ctx context.Context, restConfig *rest.Config, log logger.Logger) (*Client, error) {
 	k8sClient, err := client.New(restConfig, client.Options{})
 	if err != nil {
-		return nil, errors.KubernetesError("failed to create kubernetes client: %v", err)
+		return nil, apperrors.KubernetesError("failed to create kubernetes client: %v", err)
 	}
 
 	return &Client{
@@ -125,9 +125,16 @@ func (c *Client) CreateResource(ctx context.Context, obj *unstructured.Unstructu
 	err := c.client.Create(ctx, obj)
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
-		return nil, err
-	}
-		return nil, errors.KubernetesError("failed to create resource %s/%s (namespace: %s): %v", gvk.Kind, name, namespace, err)
+			return nil, err
+		}
+		return nil, &apperrors.K8sOperationError{
+			Operation: "create",
+			Resource:  name,
+			Kind:      gvk.Kind,
+			Namespace: namespace,
+			Message:   err.Error(),
+			Err:       err,
+		}
 	}
 
 	c.log.Infof("Successfully created resource: %s/%s", gvk.Kind, name)
@@ -152,7 +159,14 @@ func (c *Client) GetResource(ctx context.Context, gvk schema.GroupVersionKind, n
 		if apierrors.IsNotFound(err) {
 			return nil, err
 		}
-		return nil, errors.KubernetesError("failed to get resource %s/%s (namespace: %s): %v", gvk.Kind, name, namespace, err)
+		return nil, &apperrors.K8sOperationError{
+			Operation: "get",
+			Resource:  name,
+			Kind:      gvk.Kind,
+			Namespace: namespace,
+			Message:   err.Error(),
+			Err:       err,
+		}
 	}
 
 	c.log.Infof("Successfully retrieved resource: %s/%s", gvk.Kind, name)
@@ -180,18 +194,25 @@ func (c *Client) ListResources(ctx context.Context, gvk schema.GroupVersionKind,
 	if labelSelector != "" {
 		selector, err := metav1.ParseToLabelSelector(labelSelector)
 		if err != nil {
-			return nil, errors.KubernetesError("invalid label selector %s: %v", labelSelector, err)
+			return nil, apperrors.KubernetesError("invalid label selector %s: %v", labelSelector, err)
 		}
 		parsedLabelSelector, err := metav1.LabelSelectorAsSelector(selector)
 		if err != nil {
-			return nil, errors.KubernetesError("failed to convert label selector: %v", err)
+			return nil, apperrors.KubernetesError("failed to convert label selector: %v", err)
 		}
 		opts = append(opts, client.MatchingLabelsSelector{Selector: parsedLabelSelector})
 	}
 
 	err := c.client.List(ctx, list, opts...)
 	if err != nil {
-		return nil, errors.KubernetesError("failed to list resources %s (namespace: %s, labelSelector: %s): %v", gvk.Kind, namespace, labelSelector, err)
+		return nil, &apperrors.K8sOperationError{
+			Operation: "list",
+			Resource:  gvk.Kind,
+			Kind:      gvk.Kind,
+			Namespace: namespace,
+			Message:   err.Error(),
+			Err:       err,
+		}
 	}
 
 	c.log.Infof("Successfully listed resources: %s (found %d items)", gvk.Kind, len(list.Items))
@@ -230,7 +251,14 @@ func (c *Client) UpdateResource(ctx context.Context, obj *unstructured.Unstructu
 		if apierrors.IsConflict(err) {
 			return nil, err
 		}
-		return nil, errors.KubernetesError("failed to update resource %s/%s (namespace: %s): %v", gvk.Kind, name, namespace, err)
+		return nil, &apperrors.K8sOperationError{
+			Operation: "update",
+			Resource:  name,
+			Kind:      gvk.Kind,
+			Namespace: namespace,
+			Message:   err.Error(),
+			Err:       err,
+		}
 	}
 
 	c.log.Infof("Successfully updated resource: %s/%s", gvk.Kind, name)
@@ -252,7 +280,14 @@ func (c *Client) DeleteResource(ctx context.Context, gvk schema.GroupVersionKind
 			c.log.Infof("Resource already deleted: %s/%s", gvk.Kind, name)
 			return nil
 		}
-		return errors.KubernetesError("failed to delete resource %s/%s (namespace: %s): %v", gvk.Kind, name, namespace, err)
+		return &apperrors.K8sOperationError{
+			Operation: "delete",
+			Resource:  name,
+			Kind:      gvk.Kind,
+			Namespace: namespace,
+			Message:   err.Error(),
+			Err:       err,
+		}
 	}
 
 	c.log.Infof("Successfully deleted resource: %s/%s", gvk.Kind, name)
@@ -289,7 +324,7 @@ func (c *Client) PatchResource(ctx context.Context, gvk schema.GroupVersionKind,
 	// Parse patch data to validate JSON
 	var patchObj map[string]interface{}
 	if err := json.Unmarshal(patchData, &patchObj); err != nil {
-		return nil, errors.KubernetesError("invalid patch data: %v", err)
+		return nil, apperrors.KubernetesError("invalid patch data: %v", err)
 	}
 
 	// Create the resource reference
@@ -308,7 +343,14 @@ func (c *Client) PatchResource(ctx context.Context, gvk schema.GroupVersionKind,
 		if apierrors.IsNotFound(err) {
 			return nil, err
 		}
-		return nil, errors.KubernetesError("failed to patch resource %s/%s (namespace: %s): %v", gvk.Kind, name, namespace, err)
+		return nil, &apperrors.K8sOperationError{
+			Operation: "patch",
+			Resource:  name,
+			Kind:      gvk.Kind,
+			Namespace: namespace,
+			Message:   err.Error(),
+			Err:       err,
+		}
 	}
 
 	c.log.Infof("Successfully patched resource: %s/%s", gvk.Kind, name)

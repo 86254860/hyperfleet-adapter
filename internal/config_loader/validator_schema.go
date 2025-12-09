@@ -4,10 +4,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// validResourceNameRegex validates resource names for CEL compatibility.
+// Allows snake_case (my_resource) and camelCase (myResource).
+// Must start with lowercase letter, can contain letters, numbers, underscores.
+// Hyphens (kebab-case) are NOT allowed as they conflict with CEL's minus operator.
+var validResourceNameRegex = regexp.MustCompile(`^[a-z][a-zA-Z0-9_]*$`)
 
 // -----------------------------------------------------------------------------
 // SchemaValidator
@@ -142,12 +149,26 @@ func (v *SchemaValidator) validatePreconditions() error {
 }
 
 func (v *SchemaValidator) validateResources() error {
+	seen := make(map[string]bool)
+
 	for i, resource := range v.config.Spec.Resources {
 		path := fmt.Sprintf("%s.%s[%d]", FieldSpec, FieldResources, i)
 
 		if resource.Name == "" {
 			return fmt.Errorf("%s.%s is required", path, FieldName)
 		}
+
+		// Validate resource name format for CEL compatibility
+		// Allows snake_case and camelCase, but NOT kebab-case (hyphens conflict with CEL minus operator)
+		if !validResourceNameRegex.MatchString(resource.Name) {
+			return fmt.Errorf("%s.%s %q: must start with lowercase letter and contain only letters, numbers, underscores (no hyphens)", path, FieldName, resource.Name)
+		}
+
+		// Check for duplicate resource names
+		if seen[resource.Name] {
+			return fmt.Errorf("%s.%s %q: duplicate resource name", path, FieldName, resource.Name)
+		}
+		seen[resource.Name] = true
 
 		if resource.Manifest == nil {
 			return fmt.Errorf("%s (%s): %s is required", path, resource.Name, FieldManifest)

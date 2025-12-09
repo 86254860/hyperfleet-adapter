@@ -14,7 +14,7 @@ The k8s_client package provides foundational Kubernetes API operations using **c
 - In-cluster and kubeconfig-based authentication
 - Industry-standard controller-runtime client (used by Kubebuilder, Operator SDK)
 
-**For high-level operations:** Use `internal/config-loader` package which provides `ResourceManager` with template rendering, resource discovery, and lifecycle management.
+**For high-level operations:** Use `internal/executor` package which provides resource management with template rendering, resource discovery, and lifecycle management.
 
 ### Why Controller-Runtime?
 
@@ -316,10 +316,11 @@ See `test/integration/k8s_client/` for integration test examples and setup guide
 2. **Use in-cluster auth for production** (empty `KubeConfigPath`)
 3. **Set appropriate rate limits** to avoid overwhelming the API server
 4. **Handle errors gracefully** - check for `IsNotFound`, `IsAlreadyExists`, etc.
-5. **Use high-level ResourceManager** from `config-loader` for template rendering and discovery
+5. **Use high-level executor** from `internal/executor` for template rendering and discovery
 
 ## Related Packages
 
-- **`internal/config-loader`**: High-level resource management with templates and discovery
+- **`internal/executor`**: High-level resource management with templates and discovery
+- **`internal/config_loader`**: Parses adapter configurations
 - **`pkg/errors`**: Error handling utilities
 - **`pkg/logger`**: Logging interface
