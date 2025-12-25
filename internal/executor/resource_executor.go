@@ -87,7 +87,7 @@ func (re *ResourceExecutor) executeResource(ctx context.Context, resource config
 		if err != nil && !apierrors.IsNotFound(err) {
 			if apperrors.IsRetryableDiscoveryError(err) {
 				// Transient/network error - log and continue, we'll try to create
-				re.log.Warnf(ctx, "    Transient discovery error (continuing): %v", err)
+				re.log.Warnf(ctx, "Transient discovery error (continuing): %v", err)
 			} else {
 				// Fatal error (auth, permission, validation) - fail fast
 				result.Status = StatusFailed

@@ -107,29 +107,36 @@ and HyperFleet API calls.`,
 	}
 }
 
+// buildLoggerConfig creates a logger configuration from environment variables
+// and command-line flags. Flags take precedence over environment variables.
+func buildLoggerConfig(component string) logger.Config {
+	cfg := logger.ConfigFromEnv()
+
+	// Override with command-line flags if provided
+	if logLevel != "" {
+		cfg.Level = logLevel
+	}
+	if logFormat != "" {
+		cfg.Format = logFormat
+	}
+	if logOutput != "" {
+		cfg.Output = logOutput
+	}
+
+	cfg.Component = component
+	cfg.Version = version
+
+	return cfg
+}
+
 // runServe contains the main application logic for the serve command
 func runServe() error {
 	// Create context that cancels on system signals
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Build logger configuration from flags and environment
-	logConfig := logger.ConfigFromEnv()
-	// Override with command-line flags if provided
-	if logLevel != "" {
-		logConfig.Level = logLevel
-	}
-	if logFormat != "" {
-		logConfig.Format = logFormat
-	}
-	if logOutput != "" {
-		logConfig.Output = logOutput
-	}
-	logConfig.Component = "hyperfleet-adapter" // Bootstrap component, will be updated after config load
-	logConfig.Version = version
-
 	// Create bootstrap logger (before config is loaded)
-	log, err := logger.NewLogger(logConfig)
+	log, err := logger.NewLogger(buildLoggerConfig("hyperfleet-adapter"))
 	if err != nil {
 		return fmt.Errorf("failed to create logger: %w", err)
 	}
@@ -145,9 +152,8 @@ func runServe() error {
 		return fmt.Errorf("failed to load adapter configuration: %w", err)
 	}
 
-	// Recreate logger with component from adapter config
-	logConfig.Component = adapterConfig.Metadata.Name
-	log, err = logger.NewLogger(logConfig)
+	// Recreate logger with component name from adapter config
+	log, err = logger.NewLogger(buildLoggerConfig(adapterConfig.Metadata.Name))
 	if err != nil {
 		return fmt.Errorf("failed to create logger with adapter config: %w", err)
 	}

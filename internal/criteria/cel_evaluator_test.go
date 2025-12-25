@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func Test_newCELEvaluator(t *testing.T) {
+func TestNewCELEvaluator(t *testing.T) {
 	ctx := NewEvaluationContext()
 	ctx.Set("status", "Ready")
 	ctx.Set("replicas", 3)
