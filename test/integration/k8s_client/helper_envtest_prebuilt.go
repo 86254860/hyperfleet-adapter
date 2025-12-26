@@ -97,7 +97,7 @@ func (e *TestEnvPrebuilt) Cleanup(t *testing.T) {
 // Returns an error instead of panicking to allow graceful handling.
 func setupSharedTestEnv() (*TestEnvPrebuilt, error) {
 	ctx := context.Background()
-	log := logger.NewLogger(ctx)
+	log := logger.NewTestLogger()
 
 	// Check that INTEGRATION_ENVTEST_IMAGE is set
 	imageName := os.Getenv("INTEGRATION_ENVTEST_IMAGE")
@@ -121,8 +121,8 @@ func setupSharedTestEnv() (*TestEnvPrebuilt, error) {
 			"NO_PROXY":    noProxy,
 		},
 		WaitStrategy: wait.ForAll(
-			wait.ForListeningPort(EnvtestAPIServerPort).WithPollInterval(500 * time.Millisecond),
-			wait.ForLog(EnvtestReadyLog).WithPollInterval(500 * time.Millisecond),
+			wait.ForListeningPort(EnvtestAPIServerPort).WithPollInterval(500*time.Millisecond),
+			wait.ForLog(EnvtestReadyLog).WithPollInterval(500*time.Millisecond),
 		).WithDeadline(120 * time.Second),
 		MaxRetries:     3,
 		StartupTimeout: 3 * time.Minute,
@@ -208,4 +208,3 @@ func createDefaultNamespaceNoTest(client *k8s_client.Client, ctx context.Context
 	}
 	return nil
 }
-

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +18,7 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/test/integration/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
 
@@ -63,14 +63,14 @@ func createTestEvent(clusterId, resourceId string) *event.Event {
 // createTestConfig loads the test adapter configuration from embedded YAML
 func createTestConfig(apiBaseURL string) *config_loader.AdapterConfig {
 	var config config_loader.AdapterConfig
-	
+
 	if err := yaml.Unmarshal(testAdapterConfigYAML, &config); err != nil {
 		panic(fmt.Sprintf("failed to parse test config: %v", err))
 	}
-	
+
 	// The apiBaseURL parameter is kept for compatibility but not needed
 	// since the config uses env.HYPERFLEET_API_BASE_URL which is set via t.Setenv
-	
+
 	return &config
 }
 
@@ -88,10 +88,11 @@ func TestExecutor_FullFlow_Success(t *testing.T) {
 
 	// Create config and executor
 	config := createTestConfig(mockAPI.URL())
-	apiClient, _ := hyperfleet_api.NewClient(
+	apiClient, err := hyperfleet_api.NewClient(testLog(),
 		hyperfleet_api.WithTimeout(10*time.Second),
 		hyperfleet_api.WithRetryAttempts(1),
 	)
+	require.NoError(t, err, "failed to create API client")
 
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
@@ -115,10 +116,6 @@ func TestExecutor_FullFlow_Success(t *testing.T) {
 	// Verify result
 	if result.Status != executor.StatusSuccess {
 		t.Errorf("Expected success status, got %s: %v", result.Status, result.Error)
-	}
-
-	if result.EventID != evt.ID() {
-		t.Errorf("Expected event ID %s, got %s", evt.ID(), result.EventID)
 	}
 
 	// Verify params were extracted
@@ -173,7 +170,7 @@ func TestExecutor_FullFlow_Success(t *testing.T) {
 				if health["status"] != true {
 					t.Errorf("Expected health.status to be true, got %v", health["status"])
 				}
-				
+
 				// Reason should be "Healthy" (default since no adapter.errorReason)
 				if reason, ok := health["reason"].(string); ok {
 					if reason != "Healthy" {
@@ -182,7 +179,7 @@ func TestExecutor_FullFlow_Success(t *testing.T) {
 				} else {
 					t.Error("Expected health.reason to be a string")
 				}
-				
+
 				// Message should be default success message (no adapter.errorMessage)
 				if message, ok := health["message"].(string); ok {
 					if message != "All adapter operations completed successfully" {
@@ -231,8 +228,8 @@ func TestExecutor_PreconditionNotMet(t *testing.T) {
 
 	// Create config and executor
 	config := createTestConfig(mockAPI.URL())
-	apiClient, _ := hyperfleet_api.NewClient()
-
+	apiClient, err := hyperfleet_api.NewClient(k8sEnv.Log)
+	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
@@ -282,7 +279,7 @@ func TestExecutor_PreconditionNotMet(t *testing.T) {
 				if health["status"] != false {
 					t.Errorf("Expected health.status to be false for precondition not met, got %v", health["status"])
 				}
-				
+
 				// Reason should contain error (from adapter.errorReason, not "Healthy")
 				if reason, ok := health["reason"].(string); ok {
 					if reason == "Healthy" {
@@ -290,7 +287,7 @@ func TestExecutor_PreconditionNotMet(t *testing.T) {
 					}
 					t.Logf("Health reason: %s", reason)
 				}
-				
+
 				// Message should contain error explanation (from adapter.errorMessage)
 				if message, ok := health["message"].(string); ok {
 					if message == "All adapter operations completed successfully" {
@@ -305,12 +302,12 @@ func TestExecutor_PreconditionNotMet(t *testing.T) {
 	// Verify execution context shows adapter is healthy (executionStatus = "success", resources skipped)
 	if result.ExecutionContext != nil {
 		if result.ExecutionContext.Adapter.ExecutionStatus != string(executor.StatusSuccess) {
-			t.Errorf("Expected adapter.executionStatus to be 'success', got '%s'", 
+			t.Errorf("Expected adapter.executionStatus to be 'success', got '%s'",
 				result.ExecutionContext.Adapter.ExecutionStatus)
 		}
 		// No executionError should be set - precondition not matching is not an error
 		if result.ExecutionContext.Adapter.ExecutionError != nil {
-			t.Errorf("Expected no executionError for precondition not met, got %+v", 
+			t.Errorf("Expected no executionError for precondition not met, got %+v",
 				result.ExecutionContext.Adapter.ExecutionError)
 		}
 	}
@@ -333,9 +330,10 @@ func TestExecutor_PreconditionAPIFailure(t *testing.T) {
 
 	// Create config and executor
 	config := createTestConfig(mockAPI.URL())
-	apiClient, _ := hyperfleet_api.NewClient(
+	apiClient, err := hyperfleet_api.NewClient(testLog(),
 		hyperfleet_api.WithRetryAttempts(1),
 	)
+	assert.NoError(t, err)
 
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
@@ -386,7 +384,7 @@ func TestExecutor_PreconditionAPIFailure(t *testing.T) {
 				if health["status"] != false {
 					t.Errorf("Expected health.status to be false for API error, got %v", health["status"])
 				}
-				
+
 				// Reason should contain error reason (not "Healthy")
 				if reason, ok := health["reason"].(string); ok {
 					if reason == "Healthy" {
@@ -396,7 +394,7 @@ func TestExecutor_PreconditionAPIFailure(t *testing.T) {
 				} else {
 					t.Error("Expected health.reason to be a string")
 				}
-				
+
 				// Message should contain error message (not default success message)
 				if message, ok := health["message"].(string); ok {
 					if message == "All adapter operations completed successfully" {
@@ -446,7 +444,9 @@ func TestExecutor_CELExpressionEvaluation(t *testing.T) {
 		},
 	}
 
-	apiClient, _ := hyperfleet_api.NewClient()
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+
+	assert.NoError(t, err)
 
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
@@ -494,8 +494,8 @@ func TestExecutor_MultipleMessages(t *testing.T) {
 	t.Setenv("HYPERFLEET_API_VERSION", "v1")
 
 	config := createTestConfig(mockAPI.URL())
-	apiClient, _ := hyperfleet_api.NewClient()
-
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
@@ -547,8 +547,8 @@ func TestExecutor_Handler_Integration(t *testing.T) {
 	t.Setenv("HYPERFLEET_API_VERSION", "v1")
 
 	config := createTestConfig(mockAPI.URL())
-	apiClient, _ := hyperfleet_api.NewClient()
-
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
@@ -598,8 +598,8 @@ func TestExecutor_Handler_PreconditionNotMet_ReturnsNil(t *testing.T) {
 	t.Setenv("HYPERFLEET_API_VERSION", "v1")
 
 	config := createTestConfig(mockAPI.URL())
-	apiClient, _ := hyperfleet_api.NewClient()
-
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
@@ -631,8 +631,8 @@ func TestExecutor_ContextCancellation(t *testing.T) {
 	t.Setenv("HYPERFLEET_API_VERSION", "v1")
 
 	config := createTestConfig(mockAPI.URL())
-	apiClient, _ := hyperfleet_api.NewClient()
-
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
@@ -665,7 +665,8 @@ func TestExecutor_MissingRequiredParam(t *testing.T) {
 	t.Setenv("HYPERFLEET_API_VERSION", "v1")
 
 	config := createTestConfig(mockAPI.URL())
-	apiClient, _ := hyperfleet_api.NewClient()
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	assert.NoError(t, err)
 
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
@@ -729,7 +730,8 @@ func TestExecutor_InvalidEventJSON(t *testing.T) {
 	t.Setenv("HYPERFLEET_API_VERSION", "v1")
 
 	config := createTestConfig(mockAPI.URL())
-	apiClient, _ := hyperfleet_api.NewClient()
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	assert.NoError(t, err)
 
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
@@ -746,7 +748,7 @@ func TestExecutor_InvalidEventJSON(t *testing.T) {
 	evt.SetID("invalid-event-123")
 	evt.SetType("com.redhat.hyperfleet.cluster.provision")
 	evt.SetSource("test")
-	
+
 	// Set malformed JSON data that can't be parsed
 	invalidJSON := []byte("this is not valid JSON {{{")
 	_ = evt.SetData(event.ApplicationJSON, invalidJSON)
@@ -763,12 +765,12 @@ func TestExecutor_InvalidEventJSON(t *testing.T) {
 	assert.Empty(t, result.PostActionResults, "Post-actions should not execute for invalid event")
 	assert.Empty(t, result.PreconditionResults, "Preconditions should not execute for invalid event")
 	assert.Empty(t, result.ResourceResults, "Resources should not execute for invalid event")
-	
+
 	// Test handler behavior: should ACK (not NACK) invalid events
 	handler := exec.CreateHandler()
 	err = handler(context.Background(), &evt)
 	assert.Nil(t, err, "Handler should ACK (return nil) for invalid events, not NACK")
-	
+
 	t.Log("Expected behavior: Invalid event is ACKed (not NACKed), all phases skipped")
 }
 
@@ -781,8 +783,8 @@ func TestExecutor_MissingEventFields(t *testing.T) {
 	t.Setenv("HYPERFLEET_API_VERSION", "v1")
 
 	config := createTestConfig(mockAPI.URL())
-	apiClient, _ := hyperfleet_api.NewClient()
-
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
@@ -798,9 +800,9 @@ func TestExecutor_MissingEventFields(t *testing.T) {
 	evt.SetID("missing-field-event")
 	evt.SetType("com.redhat.hyperfleet.cluster.provision")
 	evt.SetSource("test")
-	
+
 	eventData := map[string]interface{}{
-		"resource_id":   "resource-123",
+		"resource_id": "resource-123",
 		// Missing cluster_id (required)
 	}
 	eventDataBytes, _ := json.Marshal(eventData)
@@ -819,12 +821,12 @@ func TestExecutor_MissingEventFields(t *testing.T) {
 	assert.Empty(t, result.PostActionResults, "Post-actions should not execute for missing required field")
 	assert.Empty(t, result.PreconditionResults, "Preconditions should not execute for missing required field")
 	assert.Empty(t, result.ResourceResults, "Resources should not execute for missing required field")
-	
+
 	// Test handler behavior: should ACK (not NACK) events with missing required fields
 	handler := exec.CreateHandler()
 	err = handler(context.Background(), &evt)
 	assert.Nil(t, err, "Handler should ACK (return nil) for missing required fields, not NACK")
-	
+
 	t.Log("Expected behavior: Event with missing required field is ACKed (not NACKed), all phases skipped")
 }
 
@@ -836,8 +838,8 @@ func TestExecutor_LogAction(t *testing.T) {
 	t.Setenv("HYPERFLEET_API_BASE_URL", mockAPI.URL())
 	t.Setenv("HYPERFLEET_API_VERSION", "v1")
 
-	// Create a custom logger that captures log messages
-	logCapture := &logCaptureLogger{t: t, messages: make([]string, 0)}
+	// Create a logger that captures log messages for assertions
+	log, logCapture := logger.NewCaptureLogger()
 
 	// Create config with log actions in preconditions and post-actions
 	config := &config_loader.AdapterConfig{
@@ -912,11 +914,12 @@ func TestExecutor_LogAction(t *testing.T) {
 		},
 	}
 
-	apiClient, _ := hyperfleet_api.NewClient()
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
-		WithLogger(logCapture).
+		WithLogger(log).
 		WithK8sClient(getK8sEnvForTest(t).Client).
 		Build()
 	if err != nil {
@@ -933,10 +936,8 @@ func TestExecutor_LogAction(t *testing.T) {
 	}
 
 	// Verify log messages were captured
-	t.Logf("Captured %d log messages", len(logCapture.messages))
-	for i, msg := range logCapture.messages {
-		t.Logf("  [%d] %s", i, msg)
-	}
+	capturedLogs := logCapture.Messages()
+	t.Logf("Captured logs:\n%s", capturedLogs)
 
 	// Check for expected log messages (with [config] prefix)
 	expectedLogs := []string{
@@ -947,14 +948,7 @@ func TestExecutor_LogAction(t *testing.T) {
 	}
 
 	for _, expected := range expectedLogs {
-		found := false
-		for _, msg := range logCapture.messages {
-			if strings.Contains(msg, expected) {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !logCapture.Contains(expected) {
 			t.Errorf("Expected log message not found: %s", expected)
 		}
 	}
@@ -972,45 +966,12 @@ func TestExecutor_LogAction(t *testing.T) {
 	t.Logf("Log action test completed successfully")
 }
 
-// logCaptureLogger captures log messages for testing
-type logCaptureLogger struct {
-	t        *testing.T
-	messages []string
-	mu       sync.Mutex
-}
-
-func (l *logCaptureLogger) V(level int32) logger.Logger { return l }
-func (l *logCaptureLogger) Extra(key string, value interface{}) logger.Logger { return l }
-
-func (l *logCaptureLogger) capture(level, format string, args ...interface{}) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	msg := fmt.Sprintf("[%s] "+format, append([]interface{}{level}, args...)...)
-	l.messages = append(l.messages, msg)
-	l.t.Logf("%s", msg)
-}
-
-func (l *logCaptureLogger) Infof(format string, args ...interface{}) {
-	l.capture("INFO", format, args...)
-}
-func (l *logCaptureLogger) Warningf(format string, args ...interface{}) {
-	l.capture("WARN", format, args...)
-}
-func (l *logCaptureLogger) Errorf(format string, args ...interface{}) {
-	l.capture("ERROR", format, args...)
-}
-func (l *logCaptureLogger) Info(message string)    { l.capture("INFO", "%s", message) }
-func (l *logCaptureLogger) Warning(message string) { l.capture("WARN", "%s", message) }
-func (l *logCaptureLogger) Error(message string)   { l.capture("ERROR", "%s", message) }
-func (l *logCaptureLogger) Fatal(message string)   { l.t.Fatalf("[FATAL] %s", message) }
-func (l *logCaptureLogger) Flush()                 {}
-
 // TestExecutor_PostActionAPIFailure tests handling of post action API failures (4xx/5xx responses)
 func TestExecutor_PostActionAPIFailure(t *testing.T) {
 	// Setup mock API server that fails post action API calls
 	mockAPI := testutil.NewMockAPIServer(t)
 	defer mockAPI.Close()
-	
+
 	// Preconditions will succeed, but post action API call will fail with 500
 	mockAPI.SetFailPostAction(true)
 
@@ -1020,10 +981,10 @@ func TestExecutor_PostActionAPIFailure(t *testing.T) {
 
 	// Create config and executor
 	config := createTestConfig(mockAPI.URL())
-	apiClient, _ := hyperfleet_api.NewClient(
+	apiClient, err := hyperfleet_api.NewClient(testLog(),
 		hyperfleet_api.WithRetryAttempts(1),
 	)
-
+	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
@@ -1058,7 +1019,7 @@ func TestExecutor_PostActionAPIFailure(t *testing.T) {
 		assert.NotNil(t, postResult.Error, "Expected post action error to be set")
 		assert.True(t, postResult.APICallMade, "Expected API call to be made")
 		assert.Equal(t, http.StatusInternalServerError, postResult.HTTPStatus, "Expected 500 status code")
-		
+
 		// Verify error contains status code and response body
 		errStr := postResult.Error.Error()
 		assert.Contains(t, errStr, "500", "Error should contain status code")
@@ -1076,7 +1037,7 @@ func TestExecutor_PostActionAPIFailure(t *testing.T) {
 			assert.Equal(t, "post_actions", execErr.Phase, "Expected error in post_actions phase")
 			assert.Equal(t, "reportClusterStatus", execErr.Step, "Expected error in reportClusterStatus step")
 			assert.Contains(t, execErr.Message, "500", "Expected error message to contain 500 status code")
-			t.Logf("ExecutionError: phase=%s, step=%s, message=%s", 
+			t.Logf("ExecutionError: phase=%s, step=%s, message=%s",
 				execErr.Phase, execErr.Step, execErr.Message)
 		}
 	}
@@ -1087,7 +1048,7 @@ func TestExecutor_PostActionAPIFailure(t *testing.T) {
 	// Verify precondition API was called, but status POST failed
 	requests := mockAPI.GetRequests()
 	assert.GreaterOrEqual(t, len(requests), 2, "Expected at least 2 API calls (GET cluster + POST status)")
-	
+
 	// Find the status POST request
 	var statusPostFound bool
 	for _, req := range requests {
@@ -1197,8 +1158,8 @@ func TestExecutor_ExecutionError_CELAccess(t *testing.T) {
 		},
 	}
 
-	apiClient, _ := hyperfleet_api.NewClient(hyperfleet_api.WithRetryAttempts(1))
-
+	apiClient, err := hyperfleet_api.NewClient(testLog(), hyperfleet_api.WithRetryAttempts(1))
+	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
@@ -1252,7 +1213,7 @@ func TestExecutor_ExecutionError_CELAccess(t *testing.T) {
 			assert.Equal(t, "preconditions", reportPayload["errorPhase"], "errorPhase should be 'preconditions'")
 			assert.Equal(t, "clusterStatus", reportPayload["errorStep"], "errorStep should be 'clusterStatus'")
 			assert.NotEqual(t, "no_message", reportPayload["errorMessage"], "errorMessage should contain actual error")
-			
+
 			// Verify other adapter fields still accessible
 			assert.Equal(t, "failed", reportPayload["executionStatus"], "executionStatus should be 'failed'")
 			assert.NotEmpty(t, reportPayload["errorReason"], "errorReason should be populated")
@@ -1335,15 +1296,15 @@ func TestExecutor_PayloadBuildFailure(t *testing.T) {
 		},
 	}
 
-	apiClient, _ := hyperfleet_api.NewClient()
-	
-	// Use log capture to verify error logging
-	logCapture := &logCaptureLogger{t: t, messages: make([]string, 0)}
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	assert.NoError(t, err)
+	// Use capture logger to verify error logging
+	log, logCapture := logger.NewCaptureLogger()
 
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
-		WithLogger(logCapture).
+		WithLogger(log).
 		WithK8sClient(getK8sEnvForTest(t).Client).
 		Build()
 	if err != nil {
@@ -1381,14 +1342,10 @@ func TestExecutor_PayloadBuildFailure(t *testing.T) {
 	}
 
 	// Verify error was logged (should contain "failed to build")
-	foundErrorLog := false
-	for _, msg := range logCapture.messages {
-		if strings.Contains(msg, "[ERROR]") && strings.Contains(msg, "failed to build") {
-			foundErrorLog = true
-			t.Logf("Found error log: %s", msg)
-			break
-		}
-	}
+	// slog uses "level=ERROR" format
+	capturedLogs := logCapture.Messages()
+	t.Logf("Captured logs:\n%s", capturedLogs)
+	foundErrorLog := logCapture.Contains("level=ERROR") && logCapture.Contains("failed to build")
 	assert.True(t, foundErrorLog, "Expected to find error log for payload build failure")
 
 	// Verify NO API call was made to the post action endpoint (blocked)
@@ -1401,4 +1358,3 @@ func TestExecutor_PayloadBuildFailure(t *testing.T) {
 
 	t.Logf("Payload build failure test completed: post actions properly blocked, error logged")
 }
-

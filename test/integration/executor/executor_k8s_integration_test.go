@@ -23,11 +23,11 @@ import (
 
 // k8sTestAPIServer creates a mock API server for K8s integration tests
 type k8sTestAPIServer struct {
-	server           *httptest.Server
-	mu               sync.Mutex
-	requests         []k8sTestRequest
-	clusterResponse  map[string]interface{}
-	statusResponses  []map[string]interface{}
+	server          *httptest.Server
+	mu              sync.Mutex
+	requests        []k8sTestRequest
+	clusterResponse map[string]interface{}
+	statusResponses []map[string]interface{}
 }
 
 type k8sTestRequest struct {
@@ -315,10 +315,11 @@ func TestExecutor_K8s_CreateResources(t *testing.T) {
 
 	// Create config with K8s resources
 	config := createK8sTestConfig(mockAPI.URL(), testNamespace)
-	apiClient, _ := hyperfleet_api.NewClient(
+	apiClient, err := hyperfleet_api.NewClient(testLog(),
 		hyperfleet_api.WithTimeout(10*time.Second),
 		hyperfleet_api.WithRetryAttempts(1),
 	)
+	require.NoError(t, err)
 
 	// Create executor with real K8s client
 	exec, err := executor.NewBuilder().
@@ -406,10 +407,10 @@ func TestExecutor_K8s_CreateResources(t *testing.T) {
 		if applied, ok := conditions["applied"].(map[string]interface{}); ok {
 			// Status should be true (adapter.executionStatus == "success")
 			assert.Equal(t, true, applied["status"], "Applied status should be true")
-			
+
 			// Reason should be "ResourcesCreated" (default, no adapter.errorReason)
 			assert.Equal(t, "ResourcesCreated", applied["reason"], "Should use default reason for success")
-			
+
 			// Message should be success message (default, no adapter.errorMessage)
 			if message, ok := applied["message"].(string); ok {
 				assert.Equal(t, "ConfigMap and Secret created successfully", message, "Should use default success message")
@@ -467,7 +468,8 @@ func TestExecutor_K8s_UpdateExistingResource(t *testing.T) {
 	// Only include ConfigMap resource for this test
 	config.Spec.Resources = config.Spec.Resources[:1]
 
-	apiClient, _ := hyperfleet_api.NewClient()
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
@@ -510,10 +512,10 @@ func TestExecutor_K8s_UpdateExistingResource(t *testing.T) {
 		if applied, ok := conditions["applied"].(map[string]interface{}); ok {
 			// Status should be true (adapter.executionStatus == "success")
 			assert.Equal(t, true, applied["status"], "Applied status should be true for successful update")
-			
+
 			// Reason should be default success reason (no adapter.errorReason)
 			assert.Equal(t, "ResourcesCreated", applied["reason"], "Should use default reason")
-			
+
 			// Message should be default success message (no adapter.errorMessage)
 			if message, ok := applied["message"].(string); ok {
 				assert.Contains(t, message, "created successfully", "Should contain success message")
@@ -573,7 +575,8 @@ func TestExecutor_K8s_DiscoveryByLabels(t *testing.T) {
 		},
 	}
 
-	apiClient, _ := hyperfleet_api.NewClient()
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
@@ -643,7 +646,8 @@ func TestExecutor_K8s_RecreateOnChange(t *testing.T) {
 		},
 	}
 
-	apiClient, _ := hyperfleet_api.NewClient()
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
@@ -700,8 +704,8 @@ func TestExecutor_K8s_MultipleResourceTypes(t *testing.T) {
 
 	// Execute with default config (ConfigMap + Secret)
 	config := createK8sTestConfig(mockAPI.URL(), testNamespace)
-	apiClient, _ := hyperfleet_api.NewClient()
-
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
@@ -748,8 +752,8 @@ func TestExecutor_K8s_ResourceCreationFailure(t *testing.T) {
 	t.Setenv("HYPERFLEET_API_VERSION", "v1")
 
 	config := createK8sTestConfig(mockAPI.URL(), nonExistentNamespace)
-	apiClient, _ := hyperfleet_api.NewClient()
-
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
@@ -797,8 +801,8 @@ func TestExecutor_K8s_ResourceCreationFailure(t *testing.T) {
 						t.Error("Expected K8s error message, got default success message")
 					}
 					// Should contain namespace-related error
-					if !strings.Contains(strings.ToLower(message), "namespace") && 
-					   !strings.Contains(strings.ToLower(message), "not found") {
+					if !strings.Contains(strings.ToLower(message), "namespace") &&
+						!strings.Contains(strings.ToLower(message), "not found") {
 						t.Logf("Warning: K8s error message may not contain expected keywords: %s", message)
 					}
 					t.Logf("K8s error message: %s", message)
@@ -903,7 +907,8 @@ func TestExecutor_K8s_MultipleMatchingResources(t *testing.T) {
 		},
 	}
 
-	apiClient, _ := hyperfleet_api.NewClient()
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
@@ -966,8 +971,8 @@ func TestExecutor_K8s_PostActionsAfterPreconditionNotMet(t *testing.T) {
 	t.Setenv("HYPERFLEET_API_VERSION", "v1")
 
 	config := createK8sTestConfig(mockAPI.URL(), testNamespace)
-	apiClient, _ := hyperfleet_api.NewClient()
-
+	apiClient, err := hyperfleet_api.NewClient(testLog())
+	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithAdapterConfig(config).
 		WithAPIClient(apiClient).
@@ -991,7 +996,7 @@ func TestExecutor_K8s_PostActionsAfterPreconditionNotMet(t *testing.T) {
 
 	// Post actions SHOULD still execute
 	assert.NotEmpty(t, result.PostActionResults, "Post actions should execute even when precondition not met")
-	t.Logf("Post action executed: %s (status: %s)", 
+	t.Logf("Post action executed: %s (status: %s)",
 		result.PostActionResults[0].Name, result.PostActionResults[0].Status)
 
 	// Verify status was reported with error info
@@ -1005,7 +1010,7 @@ func TestExecutor_K8s_PostActionsAfterPreconditionNotMet(t *testing.T) {
 		if applied, ok := conditions["applied"].(map[string]interface{}); ok {
 			// Status should be false (adapter.executionStatus != "success")
 			assert.Equal(t, false, applied["status"], "Applied status should be false")
-			
+
 			// Reason should come from adapter.errorReason (not default)
 			if reason, ok := applied["reason"].(string); ok {
 				if reason == "ResourcesCreated" {
@@ -1013,7 +1018,7 @@ func TestExecutor_K8s_PostActionsAfterPreconditionNotMet(t *testing.T) {
 				}
 				t.Logf("Applied reason: %s", reason)
 			}
-			
+
 			// Message should come from adapter.errorMessage (not default)
 			if message, ok := applied["message"].(string); ok {
 				if message == "ConfigMap and Secret created successfully" {
@@ -1024,5 +1029,3 @@ func TestExecutor_K8s_PostActionsAfterPreconditionNotMet(t *testing.T) {
 		}
 	}
 }
-
-
