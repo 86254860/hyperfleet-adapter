@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
@@ -39,6 +40,11 @@ type Server struct {
 	log       logger.Logger
 	port      string
 	component string
+
+	// shuttingDown is an atomic flag that indicates the server is shutting down.
+	// When true, /readyz immediately returns 503 regardless of other checks.
+	// This follows the HyperFleet Graceful Shutdown Standard.
+	shuttingDown atomic.Bool
 
 	mu     sync.RWMutex
 	checks map[string]CheckStatus
@@ -111,8 +117,26 @@ func (s *Server) SetConfigLoaded() {
 	s.SetCheck("config", CheckOK)
 }
 
-// IsReady returns true if all checks are passing.
+// SetShuttingDown marks the server as shutting down.
+// When set to true, /readyz will immediately return 503 Service Unavailable
+// regardless of other check statuses. This follows the HyperFleet Graceful
+// Shutdown Standard: mark not ready immediately when SIGTERM is received.
+func (s *Server) SetShuttingDown(shuttingDown bool) {
+	s.shuttingDown.Store(shuttingDown)
+}
+
+// IsShuttingDown returns true if the server is in shutdown mode.
+func (s *Server) IsShuttingDown() bool {
+	return s.shuttingDown.Load()
+}
+
+// IsReady returns true if all checks are passing and server is not shutting down.
 func (s *Server) IsReady() bool {
+	// Check shutdown flag first (atomic, no lock needed)
+	if s.shuttingDown.Load() {
+		return false
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -129,14 +153,25 @@ func (s *Server) IsReady() bool {
 func (s *Server) healthzHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(HealthResponse{Status: "ok"})
+	_ = json.NewEncoder(w).Encode(HealthResponse{Status: "ok"})
 }
 
 // readyzHandler handles readiness probe requests.
 // Returns 200 OK with detailed checks if all checks pass,
-// 503 Service Unavailable otherwise.
+// 503 Service Unavailable if shutting down or any check fails.
 func (s *Server) readyzHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
+	// Check shutdown flag first (atomic, no lock needed)
+	// Per HyperFleet Graceful Shutdown Standard: immediately return 503 on shutdown
+	if s.shuttingDown.Load() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(ReadyResponse{
+			Status:  "error",
+			Message: "server is shutting down",
+		})
+		return
+	}
 
 	s.mu.RLock()
 	checks := make(map[string]CheckStatus, len(s.checks))
@@ -151,7 +186,7 @@ func (s *Server) readyzHandler(w http.ResponseWriter, r *http.Request) {
 
 	if allOK {
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(ReadyResponse{
+		_ = json.NewEncoder(w).Encode(ReadyResponse{
 			Status: "ok",
 			Checks: checks,
 		})
@@ -159,7 +194,7 @@ func (s *Server) readyzHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusServiceUnavailable)
-	json.NewEncoder(w).Encode(ReadyResponse{
+	_ = json.NewEncoder(w).Encode(ReadyResponse{
 		Status:  "error",
 		Message: "not ready",
 		Checks:  checks,

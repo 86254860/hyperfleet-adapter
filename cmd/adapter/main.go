@@ -287,9 +287,10 @@ func runServe() error {
 	go func() {
 		sig := <-sigCh
 		log.Infof(ctx, "Received signal %s, initiating graceful shutdown...", sig)
-		// Mark as not ready immediately per graceful shutdown standard
+		// Mark as not ready immediately per HyperFleet Graceful Shutdown Standard
+		// This must happen BEFORE context cancellation to ensure /readyz returns 503
 		log.Info(ctx, "Shutdown initiated, marking not ready")
-		healthServer.SetReady(false)
+		healthServer.SetShuttingDown(true)
 		cancel()
 
 		// Second signal forces immediate exit
@@ -376,8 +377,8 @@ func runServe() error {
 	case err := <-fatalErrCh:
 		errCtx := logger.WithErrorField(ctx, err)
 		log.Errorf(errCtx, "Fatal subscription error, shutting down")
-		// Mark as not ready before shutdown
-		healthServer.SetReady(false)
+		// Mark as not ready before shutdown per HyperFleet Graceful Shutdown Standard
+		healthServer.SetShuttingDown(true)
 		cancel() // Cancel context to trigger graceful shutdown
 	}
 

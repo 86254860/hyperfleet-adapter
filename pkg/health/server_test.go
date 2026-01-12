@@ -37,7 +37,7 @@ func TestHealthzHandler(t *testing.T) {
 	server.healthzHandler(w, req)
 
 	resp := w.Result()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
@@ -59,7 +59,7 @@ func TestReadyzHandler_NotReady(t *testing.T) {
 	server.readyzHandler(w, req)
 
 	resp := w.Result()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
@@ -85,7 +85,7 @@ func TestReadyzHandler_Ready(t *testing.T) {
 	server.readyzHandler(w, req)
 
 	resp := w.Result()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
@@ -132,7 +132,7 @@ func TestSetCheck(t *testing.T) {
 	server.readyzHandler(w, req)
 
 	resp := w.Result()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var response ReadyResponse
 	err := json.NewDecoder(resp.Body).Decode(&response)
@@ -154,7 +154,7 @@ func TestReadyzHandler_PartialReady(t *testing.T) {
 	server.readyzHandler(w, req)
 
 	resp := w.Result()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 
@@ -189,6 +189,92 @@ func TestReadyzHandler_ReadyToNotReady(t *testing.T) {
 	var response ReadyResponse
 	err := json.NewDecoder(w.Result().Body).Decode(&response)
 	require.NoError(t, err)
-	assert.Equal(t, CheckOK, response.Checks["config"])  // Config stays ok
+	assert.Equal(t, CheckOK, response.Checks["config"])    // Config stays ok
 	assert.Equal(t, CheckError, response.Checks["broker"]) // Broker is error
+}
+
+func TestSetShuttingDown(t *testing.T) {
+	server := NewServer(&mockLogger{}, "8080", "test-adapter")
+
+	// Initially not shutting down
+	assert.False(t, server.IsShuttingDown())
+
+	// Set shutting down
+	server.SetShuttingDown(true)
+	assert.True(t, server.IsShuttingDown())
+
+	// Clear shutting down
+	server.SetShuttingDown(false)
+	assert.False(t, server.IsShuttingDown())
+}
+
+func TestReadyzHandler_ShuttingDown(t *testing.T) {
+	server := NewServer(&mockLogger{}, "8080", "test-adapter")
+
+	// Set all checks to ok (server is ready)
+	server.SetConfigLoaded()
+	server.SetReady(true)
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	server.readyzHandler(w, req)
+	assert.Equal(t, http.StatusOK, w.Result().StatusCode)
+
+	// Simulate graceful shutdown - set shutting down flag
+	server.SetShuttingDown(true)
+
+	// Readyz should now return 503 with shutdown message
+	req = httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w = httptest.NewRecorder()
+	server.readyzHandler(w, req)
+
+	resp := w.Result()
+	defer func() { _ = resp.Body.Close() }()
+
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+
+	var response ReadyResponse
+	err := json.NewDecoder(resp.Body).Decode(&response)
+	require.NoError(t, err)
+	assert.Equal(t, "error", response.Status)
+	assert.Equal(t, "server is shutting down", response.Message)
+	// Checks should not be included when shutting down
+	assert.Nil(t, response.Checks)
+}
+
+func TestIsReady_ShuttingDown(t *testing.T) {
+	server := NewServer(&mockLogger{}, "8080", "test-adapter")
+
+	// Set all checks to ok
+	server.SetConfigLoaded()
+	server.SetReady(true)
+	assert.True(t, server.IsReady())
+
+	// Set shutting down - should override checks
+	server.SetShuttingDown(true)
+	assert.False(t, server.IsReady())
+}
+
+func TestReadyzHandler_ShuttingDownPriority(t *testing.T) {
+	server := NewServer(&mockLogger{}, "8080", "test-adapter")
+
+	// Set all checks to ok
+	server.SetConfigLoaded()
+	server.SetReady(true)
+
+	// Set shutting down first, then check response
+	server.SetShuttingDown(true)
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	server.readyzHandler(w, req)
+
+	resp := w.Result()
+	defer func() { _ = resp.Body.Close() }()
+
+	// Should return shutdown message, not regular "not ready" message
+	var response ReadyResponse
+	err := json.NewDecoder(resp.Body).Decode(&response)
+	require.NoError(t, err)
+	assert.Equal(t, "server is shutting down", response.Message)
 }
