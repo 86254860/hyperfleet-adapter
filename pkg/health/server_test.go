@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/stretchr/testify/assert"
@@ -281,4 +282,160 @@ func TestReadyzHandler_ShuttingDownPriority(t *testing.T) {
 	err := json.NewDecoder(resp.Body).Decode(&response)
 	require.NoError(t, err)
 	assert.Equal(t, "server is shutting down", response.Message)
+}
+
+func TestServerLifecycle_StartAndShutdown(t *testing.T) {
+	// Use a unique port to avoid conflicts
+	port := "18080"
+	server := NewServer(&mockLogger{}, port, "test-adapter")
+
+	ctx := context.Background()
+
+	// Start the server
+	err := server.Start(ctx)
+	require.NoError(t, err)
+
+	// Give the server time to start listening
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify server is listening by making an HTTP request to /healthz
+	resp, err := http.Get("http://localhost:" + port + "/healthz")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var healthResp HealthResponse
+	err = json.NewDecoder(resp.Body).Decode(&healthResp)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", healthResp.Status)
+
+	// Shutdown the server
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err = server.Shutdown(shutdownCtx)
+	require.NoError(t, err)
+
+	// Give the server time to fully shutdown
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify server stopped accepting connections
+	_, err = http.Get("http://localhost:" + port + "/healthz")
+	assert.Error(t, err, "expected connection refused after shutdown")
+}
+
+func TestServerLifecycle_ReadyzWhileRunning(t *testing.T) {
+	port := "18081"
+	server := NewServer(&mockLogger{}, port, "test-adapter")
+
+	ctx := context.Background()
+
+	// Start the server
+	err := server.Start(ctx)
+	require.NoError(t, err)
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+
+	// Give the server time to start listening
+	time.Sleep(50 * time.Millisecond)
+
+	// Initially not ready (checks are in error state)
+	assert.False(t, server.IsReady())
+
+	resp, err := http.Get("http://localhost:" + port + "/readyz")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+
+	// Set checks to ok
+	server.SetConfigLoaded()
+	server.SetReady(true)
+	assert.True(t, server.IsReady())
+
+	resp2, err := http.Get("http://localhost:" + port + "/readyz")
+	require.NoError(t, err)
+	defer func() { _ = resp2.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp2.StatusCode)
+}
+
+func TestServerLifecycle_GracefulShutdownStateTransitions(t *testing.T) {
+	port := "18082"
+	server := NewServer(&mockLogger{}, port, "test-adapter")
+
+	ctx := context.Background()
+
+	// Start the server
+	err := server.Start(ctx)
+	require.NoError(t, err)
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+
+	// Give the server time to start listening
+	time.Sleep(50 * time.Millisecond)
+
+	// Set server to ready state
+	server.SetConfigLoaded()
+	server.SetReady(true)
+
+	// Verify initial state
+	assert.True(t, server.IsReady())
+	assert.False(t, server.IsShuttingDown())
+
+	// Verify /readyz returns 200
+	resp, err := http.Get("http://localhost:" + port + "/readyz")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// Simulate graceful shutdown by setting shuttingDown flag
+	server.SetShuttingDown(true)
+
+	// Verify state transitions
+	assert.True(t, server.IsShuttingDown())
+	assert.False(t, server.IsReady()) // IsReady should return false when shutting down
+
+	// Verify /readyz now returns 503 with shutdown message
+	resp2, err := http.Get("http://localhost:" + port + "/readyz")
+	require.NoError(t, err)
+	defer func() { _ = resp2.Body.Close() }()
+	assert.Equal(t, http.StatusServiceUnavailable, resp2.StatusCode)
+
+	var readyResp ReadyResponse
+	err = json.NewDecoder(resp2.Body).Decode(&readyResp)
+	require.NoError(t, err)
+	assert.Equal(t, "error", readyResp.Status)
+	assert.Equal(t, "server is shutting down", readyResp.Message)
+
+	// Verify /healthz still returns 200 (liveness should work during shutdown)
+	resp3, err := http.Get("http://localhost:" + port + "/healthz")
+	require.NoError(t, err)
+	defer func() { _ = resp3.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp3.StatusCode)
+}
+
+func TestServerLifecycle_ShutdownTimeout(t *testing.T) {
+	port := "18083"
+	server := NewServer(&mockLogger{}, port, "test-adapter")
+
+	ctx := context.Background()
+
+	// Start the server
+	err := server.Start(ctx)
+	require.NoError(t, err)
+
+	// Give the server time to start listening
+	time.Sleep(50 * time.Millisecond)
+
+	// Shutdown with a very short timeout (should still succeed for idle server)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err = server.Shutdown(shutdownCtx)
+	require.NoError(t, err)
 }
