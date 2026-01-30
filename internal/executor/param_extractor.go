@@ -181,6 +181,8 @@ func convertParamType(value interface{}, targetType string) (interface{}, error)
 }
 
 // convertToString converts a value to string
+//
+//nolint:unparam // error kept for API consistency with convertToInt64
 func convertToString(value interface{}) (string, error) {
 	switch v := value.(type) {
 	case string:

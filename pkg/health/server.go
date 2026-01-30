@@ -152,7 +152,7 @@ func (s *Server) IsReady() bool {
 func (s *Server) healthzHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(HealthResponse{Status: "ok"})
+	_ = json.NewEncoder(w).Encode(HealthResponse{Status: "ok"}) //nolint:errcheck // best-effort response
 }
 
 // readyzHandler handles readiness probe requests.
@@ -165,6 +165,7 @@ func (s *Server) readyzHandler(w http.ResponseWriter, r *http.Request) {
 	// Per HyperFleet Graceful Shutdown Standard: immediately return 503 on shutdown
 	if s.shuttingDown.Load() {
 		w.WriteHeader(http.StatusServiceUnavailable)
+		//nolint:errcheck // best-effort response
 		_ = json.NewEncoder(w).Encode(ReadyResponse{
 			Status:  "error",
 			Message: "server is shutting down",
@@ -185,6 +186,7 @@ func (s *Server) readyzHandler(w http.ResponseWriter, r *http.Request) {
 
 	if allOK {
 		w.WriteHeader(http.StatusOK)
+		//nolint:errcheck // best-effort response
 		_ = json.NewEncoder(w).Encode(ReadyResponse{
 			Status: "ok",
 			Checks: checks,
@@ -193,6 +195,7 @@ func (s *Server) readyzHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusServiceUnavailable)
+	//nolint:errcheck // best-effort response
 	_ = json.NewEncoder(w).Encode(ReadyResponse{
 		Status:  "error",
 		Message: "not ready",

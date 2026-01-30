@@ -219,7 +219,7 @@ func ExecuteAPICall(ctx context.Context, apiCall *config_loader.APICall, execCtx
 func ValidateAPIResponse(resp *hyperfleet_api.Response, err error, method, url string) error {
 	if err != nil {
 		// If it's already an APIError, return it as-is
-		if _, ok := apierrors.IsAPIError(err); ok {
+		if _, ok := apierrors.IsAPIError(err); ok { //nolint:errcheck // checking type only, not using the value
 			return err
 		}
 		// Otherwise wrap it as APIError
@@ -295,7 +295,7 @@ var templateFuncs = template.FuncMap{
 		case float64:
 			return int(val)
 		case string:
-			i, _ := strconv.Atoi(val)
+			i, _ := strconv.Atoi(val) //nolint:errcheck // returns 0 on error, which is acceptable
 			return i
 		default:
 			return 0
@@ -310,7 +310,7 @@ var templateFuncs = template.FuncMap{
 		case float64:
 			return int64(val)
 		case string:
-			i, _ := strconv.ParseInt(val, 10, 64)
+			i, _ := strconv.ParseInt(val, 10, 64) //nolint:errcheck // returns 0 on error, which is acceptable
 			return i
 		default:
 			return 0
@@ -325,7 +325,7 @@ var templateFuncs = template.FuncMap{
 		case float64:
 			return val
 		case string:
-			f, _ := strconv.ParseFloat(val, 64)
+			f, _ := strconv.ParseFloat(val, 64) //nolint:errcheck // returns 0 on error, which is acceptable
 			return f
 		default:
 			return 0

@@ -437,7 +437,7 @@ func evaluateExists(fieldValue interface{}) bool {
 
 	// Check for zero values
 	value := reflect.ValueOf(fieldValue)
-	switch value.Kind() {
+	switch value.Kind() { //nolint:exhaustive // only checking collection and pointer types
 	case reflect.Slice, reflect.Map, reflect.Array:
 		return value.Len() > 0
 	case reflect.Ptr, reflect.Interface:
