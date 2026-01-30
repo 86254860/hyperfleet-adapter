@@ -1,0 +1,142 @@
+# HyperFleet Adapter golangci-lint v2 Configuration
+# Required linters (16):
+# - Code Quality (9): errcheck, govet, staticcheck, ineffassign, unused, unconvert, unparam, goconst, exhaustive
+# - Code Style (6): gofmt, goimports, misspell, lll, revive, gocritic
+# - Security (1): gosec
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    # Code Quality (9 linters)
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - unconvert
+    - unparam
+    - goconst
+    - exhaustive
+    # Code Style (4 linters)
+    - misspell
+    - lll
+    - revive
+    - gocritic
+    # Security (1 linter)
+    - gosec
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+
+    goconst:
+      min-len: 3
+      min-occurrences: 4
+
+    misspell:
+      locale: US
+      ignore-rules:
+        - cancelled  # British spelling is acceptable
+
+    lll:
+      line-length: 120
+
+    revive:
+      confidence: 0.1
+      rules:
+        - name: exported
+          disabled: true
+        - name: var-naming
+          disabled: true
+        - name: package-comments
+          disabled: true
+        - name: unused-parameter
+          disabled: true
+        - name: indent-error-flow
+          disabled: true
+        - name: empty-block
+          disabled: true
+        - name: context-as-argument
+          disabled: true
+        - name: redefines-builtin-id
+          disabled: true
+
+    exhaustive:
+      default-signifies-exhaustive: true
+      default-case-required: false
+
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+        - singleCaseSwitch
+        - elseif
+        - exitAfterDefer
+
+  exclusions:
+    generated: strict
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # Relaxed rules for test files
+      - path: '(.+)_test\.go'
+        linters:
+          - gosec
+          - errcheck
+          - unparam
+          - goconst
+          - lll
+          - gocritic
+          - exhaustive
+      # Relaxed rules for integration tests
+      - path: 'test/'
+        linters:
+          - gosec
+          - errcheck
+          - unparam
+          - goconst
+          - lll
+          - gocritic
+          - revive
+          - exhaustive
+      # Relaxed rules for cmd/
+      - path: 'cmd/'
+        linters:
+          - revive
+          - lll
+      # Relaxed rules for internal packages
+      - path: 'internal/'
+        linters:
+          - lll
+      # Relaxed rules for pkg/
+      - path: 'pkg/'
+        linters:
+          - lll
+      # G304: file inclusion via variable - acceptable for config loader
+      - path: 'internal/config_loader/'
+        text: 'G304'
+        linters:
+          - gosec
+      # G404: weak random - acceptable for jitter in retry logic
+      - path: 'internal/hyperfleet_api/client\.go'
+        text: 'G404'
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

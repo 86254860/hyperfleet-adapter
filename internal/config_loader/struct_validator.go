@@ -41,7 +41,7 @@ func extractYamlTagName(fld reflect.StructField) string {
 
 // buildFieldNameCache recursively scans a type and caches Go field name -> yaml tag name mappings
 func buildFieldNameCache(t reflect.Type, visited map[reflect.Type]bool) {
-	switch t.Kind() {
+	switch t.Kind() { //nolint:exhaustive // only handling types that contain nested fields
 	case reflect.Ptr:
 		buildFieldNameCache(t.Elem(), visited)
 	case reflect.Slice, reflect.Array, reflect.Map:
@@ -66,7 +66,9 @@ func getStructValidator() *validator.Validate {
 		structValidator = validator.New()
 
 		// Register custom field-level validations
+		//nolint:errcheck // these validations are known-good, errors would only occur on invalid config
 		_ = structValidator.RegisterValidation("resourcename", validateResourceName)
+		//nolint:errcheck // these validations are known-good, errors would only occur on invalid config
 		_ = structValidator.RegisterValidation("validoperator", validateOperator)
 
 		// Register custom struct-level validations
@@ -94,7 +96,7 @@ func validateOperator(fl validator.FieldLevel) bool {
 // validateParameterEnvRequired is a struct-level validator for Parameter.
 // Checks that required env params have their environment variables set.
 func validateParameterEnvRequired(sl validator.StructLevel) {
-	param := sl.Current().Interface().(Parameter)
+	param := sl.Current().Interface().(Parameter) //nolint:errcheck // type is guaranteed by RegisterStructValidation
 
 	// Only validate if Required=true and Source starts with "env."
 	if !param.Required || !strings.HasPrefix(param.Source, "env.") {

@@ -135,7 +135,7 @@ func NewLogger(cfg Config) (Logger, error) {
 	}
 
 	// Get hostname
-	hostname, _ := os.Hostname()
+	hostname, _ := os.Hostname() //nolint:errcheck // fallback to alternatives below
 	if hostname == "" {
 		hostname = os.Getenv("POD_NAME")
 	}
