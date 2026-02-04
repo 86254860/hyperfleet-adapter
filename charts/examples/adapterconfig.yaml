@@ -106,7 +106,9 @@ spec:
             hyperfleet.io/cluster-id: "{{ .clusterId }}"
             hyperfleet.io/cluster-name: "{{ .clusterName }}"
 
-    # the following configura
+    #  the following configuration is for a job that will be created in the cluster
+    # in the namespace created above
+    # it will require a service account to be created in that namespace as well as a role and rolebinding
     - name: "jobServiceAccount"
       manifest:
         ref: "/etc/adapter/job-serviceaccount.yaml"
@@ -138,7 +140,7 @@ spec:
             hyperfleet.io/cluster-id: "{{ .clusterId }}"
             hyperfleet.io/resource-type: "rolebinding"
 
-    - name: "job"
+    - name: "jobNamespace"
       manifest:
         ref: "/etc/adapter/job.yaml"
       discovery:
@@ -148,7 +150,12 @@ spec:
             hyperfleet.io/generation: "{{ .generationSpec }}"
             hyperfleet.io/cluster-id: "{{ .clusterId }}"
 
-    - name: "deployment"
+
+    # the following configuration is for a deployment that will be created in the cluster
+    # in the same namespace as the adapter
+    # and using the same service account as the adapter
+
+    - name: "deploymentNamespace"
       manifest:
         ref: "/etc/adapter/deployment.yaml"
       discovery:
@@ -158,55 +165,61 @@ spec:
             hyperfleet.io/generation: "{{ .generationSpec }}"
             hyperfleet.io/cluster-id: "{{ .clusterId }}"
 
-      # Post-processing with valid CEL expressions
+  # Post-processing with valid CEL expressions
+  # This example contains multiple resources, we will only report on the conditions of the jobNamespace not to overcomplicate the example
   post:
     payloads:
       - name: "clusterStatusPayload"
         build:
           adapter: "{{ .metadata.name }}"
           conditions:
+            # Applied: Job successfully created
             - type: "Applied"
               status:
                 expression: |
-                  resources.clusterNamespace.status.phase == "Active" ? "True" : "False"
+                  has(resources.jobNamespace) ? "True" : "False"
               reason:
                 expression: |
-                  has(resources.clusterNamespace.status.phase) ? "ResourcesCreated" : "Pending"
+                  has(resources.jobNamespace)
+                    ? "JobApplied"
+                    : "JobPending"
               message:
                 expression: |
-                  "Namespace status: " + resources.clusterNamespace.status.phase
-
+                  has(resources.jobNamespace)
+                    ? "Validation job applied successfully"
+                    : "Validation job is pending to applied"
+            # Available: Check job status conditions
             - type: "Available"
               status:
                 expression: |
-                  resources.clusterNamespace.status.phase == "Active" ? "True" : "False"
+                  resources.?jobNamespace.?status.?conditions.orValue([]).exists(c, c.type == "Available")
+                    ? resources.jobNamespace.status.conditions.filter(c, c.type == "Available")[0].status : "False"
               reason:
                 expression: |
-                  "NamespaceAvailable"
+                  resources.?jobNamespace.?status.?conditions.orValue([]).exists(c, c.type == "Available")
+                    ? resources.jobNamespace.status.conditions.filter(c, c.type == "Available")[0].reason
+                    : resources.?jobNamespace.?status.?conditions.orValue([]).exists(c, c.type == "Failed") ? "ValidationFailed"
+                         : resources.?jobNamespace.?status.hasValue() ? "ValidationInProgress" : "ValidationPending"
               message:
                 expression: |
-                  "Namespace is available"
-
+                  resources.?jobNamespace.?status.?conditions.orValue([]).exists(c, c.type == "Available")
+                    ? resources.jobNamespace.status.conditions.filter(c, c.type == "Available")[0].message
+                    : resources.?jobNamespace.?status.?conditions.orValue([]).exists(c, c.type == "Failed") ? "Validation failed"
+                         : resources.?jobNamespace.?status.hasValue() ? "Validation in progress" : "Validation is pending"
+            # Health: Adapter execution status (runtime)
             - type: "Health"
               status:
                 expression: |
-                  "True"
+                  adapter.?executionStatus.orValue("") == "success" ? "True" : (adapter.?executionStatus.orValue("") == "failed" ? "False" : "Unknown")
               reason:
                 expression: |
-                  "Healthy"
+                  adapter.?errorReason.orValue("") != "" ? adapter.?errorReason.orValue("") : "Healthy"
               message:
                 expression: |
-                  "All health checks passed"
-
-          data:
-            clusterReady:
-              expression: |
-                resources.clusterNamespace.status.phase == "Active"
-              description: "Cluster namespace is active"
-
+                  adapter.?errorMessage.orValue("") != "" ? adapter.?errorMessage.orValue("") : "All adapter operations in progress or completed successfully"
+          # Event generation ID metadata field needs to use expression to avoid interpolation issues
           observed_generation:
             expression: "generationSpec"
-
           observed_time: "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
 
     postActions:
