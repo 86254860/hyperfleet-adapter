@@ -12,7 +12,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: example-job
-  namespace: "{{ .namespace }}"                        # <- this gets resolved from adapterconfig params
+  namespace: "{{ .clusterId }}"                        # <- this gets resolved from adapterconfig params
   annotations:
     hyperfleet.io/cluster-id: "{{ .clusterId }}"       # <- this gets resolved from adapterconfig params
     hyperfleet.io/generation: "{{ .generationSpec }}"  # <- this gets resolved from adapterconfig params
@@ -25,7 +25,7 @@ spec:
         app: example-job
         job-name: example-job
     spec:
-      serviceAccountName: "{{ .serviceAccountName }}"
+      serviceAccountName: "{{ .clusterId }}"
       restartPolicy: Never
 
       # Volumes

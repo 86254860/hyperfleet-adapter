@@ -2,7 +2,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: "test-deployment-{{ .clusterId }}"
+  name: "test-nginx-{{ .clusterId }}"
   namespace: "{{ .namespace }}"
   labels:
     hyperfleet.io/cluster-id: "{{ .clusterId }}"

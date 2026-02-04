@@ -93,7 +93,7 @@ spec:
         apiVersion: v1
         kind: Namespace
         metadata:
-          name: "cluster-{{ .clusterId }}"
+          name: "{{ .clusterId }}"
           labels:
             hyperfleet.io/cluster-id: "{{ .clusterId }}"
             hyperfleet.io/cluster-name: "{{ .clusterName }}"
@@ -105,6 +105,38 @@ spec:
           labelSelector:
             hyperfleet.io/cluster-id: "{{ .clusterId }}"
             hyperfleet.io/cluster-name: "{{ .clusterName }}"
+
+    # the following configura
+    - name: "jobServiceAccount"
+      manifest:
+        ref: "/etc/adapter/job-serviceaccount.yaml"
+      discovery:
+        bySelectors:
+          labelSelector:
+            hyperfleet.io/resource-type: "service-account"
+            hyperfleet.io/cluster-id: "{{ .clusterId }}"
+
+    - name: "job_role"
+      manifest:
+        ref: "/etc/adapter/job-role.yaml"
+      discovery:
+        namespace: "*"
+        bySelectors:
+          labelSelector:
+            hyperfleet.io/generation: "{{ .generationSpec }}"
+            hyperfleet.io/cluster-id: "{{ .clusterId }}"
+            hyperfleet.io/resource-type: "role"
+
+    - name: "job_rolebinding"
+      manifest:
+        ref: "/etc/adapter/job-rolebinding.yaml"
+      discovery:
+        namespace: "*"
+        bySelectors:
+          labelSelector:
+            hyperfleet.io/generation: "{{ .generationSpec }}"
+            hyperfleet.io/cluster-id: "{{ .clusterId }}"
+            hyperfleet.io/resource-type: "rolebinding"
 
     - name: "job"
       manifest:
