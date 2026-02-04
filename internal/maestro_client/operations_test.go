@@ -1,6 +1,7 @@
 package maestro_client
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/generation"
@@ -89,7 +90,7 @@ func TestValidateGeneration(t *testing.T) {
 				},
 			},
 			expectError: true,
-			errorMsg:    "must be >= 0",
+			errorMsg:    "must be > 0",
 		},
 	}
 
@@ -100,6 +101,10 @@ func TestValidateGeneration(t *testing.T) {
 			if tt.expectError {
 				if err == nil {
 					t.Errorf("expected error containing %q, got nil", tt.errorMsg)
+					return
+				}
+				if !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error containing %q, got %q", tt.errorMsg, err.Error())
 				}
 				return
 			}
@@ -283,7 +288,7 @@ func TestValidateManifestWorkGeneration(t *testing.T) {
 					Workload: workv1.ManifestsTemplate{
 						Manifests: []workv1.Manifest{
 							createManifest("Namespace", "test-ns", "5"),
-							createManifestNoGeneration("ConfigMap", "test-cm"),
+							createManifestNoGeneration("ConfigMap", "test-cm"), // Missing generation - error
 						},
 					},
 				},

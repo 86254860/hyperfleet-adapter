@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	apperrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/version"
 	"github.com/openshift-online/maestro/pkg/api/openapi"
 	"github.com/openshift-online/maestro/pkg/client/cloudevents/grpcsource"
 	workv1client "open-cluster-management.io/api/client/work/clientset/versioned/typed/work/v1"
@@ -131,7 +133,7 @@ func NewMaestroClient(ctx context.Context, config *Config, log logger.Logger) (*
 	// Create Maestro HTTP API client (OpenAPI)
 	maestroAPIClient := openapi.NewAPIClient(&openapi.Configuration{
 		DefaultHeader: make(map[string]string),
-		UserAgent:     "hyperfleet-adapter/1.0.0",
+		UserAgent:     version.UserAgent(),
 		Debug:         false,
 		Servers: openapi.ServerConfigurations{
 			{
@@ -328,10 +330,12 @@ func configureTLS(config *Config, grpcOptions *grpc.GRPCOptions) error {
 			return err
 		}
 		grpcOptions.Dialer.TLSConfig = tlsConfig
+		return nil
 	}
 
-	// No TLS configuration - will use insecure connection
-	return nil
+	// Fail fast: Insecure=false but no TLS configuration was provided
+	// This prevents silently falling back to plaintext connections
+	return fmt.Errorf("no TLS configuration provided: set CAFile (with optional ClientCertFile/ClientKeyFile or TokenFile) or set Insecure=true for plaintext connections")
 }
 
 // readTokenFile reads a token from a file and trims whitespace

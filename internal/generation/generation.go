@@ -24,13 +24,15 @@ const (
 	OperationCreate Operation = "create"
 	// OperationUpdate indicates the resource should be updated
 	OperationUpdate Operation = "update"
+	// OperationRecreate indicates the resource should be deleted and recreated
+	OperationRecreate Operation = "recreate"
 	// OperationSkip indicates no operation is needed (generations match)
 	OperationSkip Operation = "skip"
 )
 
-// CompareResult contains the result of comparing generations between
-// an existing resource and a new resource.
-type CompareResult struct {
+// ApplyDecision contains the decision about what operation to perform
+// based on comparing generations between an existing resource and a new resource.
+type ApplyDecision struct {
 	// Operation is the recommended operation based on generation comparison
 	Operation Operation
 	// Reason explains why this operation was chosen
@@ -51,9 +53,9 @@ type CompareResult struct {
 //
 // This function encapsulates the generation comparison logic used by both
 // resource_executor (for k8s resources) and maestro_client (for ManifestWorks).
-func CompareGenerations(newGen, existingGen int64, exists bool) CompareResult {
+func CompareGenerations(newGen, existingGen int64, exists bool) ApplyDecision {
 	if !exists {
-		return CompareResult{
+		return ApplyDecision{
 			Operation:          OperationCreate,
 			Reason:             "resource not found",
 			NewGeneration:      newGen,
@@ -62,7 +64,7 @@ func CompareGenerations(newGen, existingGen int64, exists bool) CompareResult {
 	}
 
 	if existingGen == newGen {
-		return CompareResult{
+		return ApplyDecision{
 			Operation:          OperationSkip,
 			Reason:             fmt.Sprintf("generation %d unchanged", existingGen),
 			NewGeneration:      newGen,
@@ -70,7 +72,7 @@ func CompareGenerations(newGen, existingGen int64, exists bool) CompareResult {
 		}
 	}
 
-	return CompareResult{
+	return ApplyDecision{
 		Operation:          OperationUpdate,
 		Reason:             fmt.Sprintf("generation changed %d->%d", existingGen, newGen),
 		NewGeneration:      newGen,
@@ -159,28 +161,29 @@ func ValidateGeneration(meta metav1.ObjectMeta) error {
 }
 
 // ValidateManifestWorkGeneration validates that the generation annotation exists on both:
-// 1. The ManifestWork metadata
-// 2. All manifests within the ManifestWork workload
+// 1. The ManifestWork metadata (required)
+// 2. All manifests within the ManifestWork workload (required)
 //
-// Returns error if any validation fails.
+// Returns error if any generation annotation is missing or invalid.
 // This ensures templates properly set generation annotations throughout the ManifestWork.
 func ValidateManifestWorkGeneration(work *workv1.ManifestWork) error {
 	if work == nil {
 		return apperrors.Validation("work cannot be nil").AsError()
 	}
 
-	// Validate ManifestWork-level generation
+	// Validate ManifestWork-level generation (required)
 	if err := ValidateGeneration(work.ObjectMeta); err != nil {
 		return apperrors.Validation("ManifestWork %q: %v", work.Name, err).AsError()
 	}
 
-	// Validate generation on each manifest
+	// Validate each manifest has generation annotation (required)
 	for i, m := range work.Spec.Workload.Manifests {
 		obj := &unstructured.Unstructured{}
 		if err := obj.UnmarshalJSON(m.Raw); err != nil {
 			return apperrors.Validation("ManifestWork %q manifest[%d]: failed to unmarshal: %v", work.Name, i, err).AsError()
 		}
 
+		// Validate generation annotation exists
 		if err := ValidateGenerationFromUnstructured(obj); err != nil {
 			kind := obj.GetKind()
 			name := obj.GetName()

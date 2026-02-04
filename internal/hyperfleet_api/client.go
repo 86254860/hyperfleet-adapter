@@ -15,6 +15,7 @@ import (
 
 	apierrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/version"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
@@ -319,6 +320,9 @@ func (c *httpClient) doRequest(ctx context.Context, req *Request) (*Response, er
 	if len(req.Body) > 0 && httpReq.Header.Get("Content-Type") == "" {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
+
+	// Set User-Agent header
+	httpReq.Header.Set("User-Agent", version.UserAgent())
 
 	// Inject OpenTelemetry trace context into headers (W3C Trace Context format)
 	// This propagates trace_id and span_id via the 'traceparent' header

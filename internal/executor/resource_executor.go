@@ -8,10 +8,9 @@ import (
 
 	"github.com/mitchellh/copystructure"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/config_loader"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8s_client"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/generation"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8s_client"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/constants"
-	apperrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -82,45 +81,14 @@ func (re *ResourceExecutor) executeResource(ctx context.Context, resource config
 
 	re.log.Debugf(ctx, "Resource[%s] manifest built: namespace=%s", resource.Name, manifest.GetNamespace())
 
-	// Step 2: Use simple ApplyResource when no discovery or recreateOnChange
-	// This is the common case - apply by name with generation comparison
-	if resource.Discovery == nil && !resource.RecreateOnChange {
-		if re.k8sClient == nil {
-			result.Status = StatusFailed
-			result.Error = fmt.Errorf("kubernetes client not configured")
-			return result, NewExecutorError(PhaseResources, resource.Name, "kubernetes client not configured", result.Error)
-		}
-
-		appliedResource, err := re.k8sClient.ApplyResource(ctx, manifest)
-		if err != nil {
-			result.Status = StatusFailed
-			result.Error = err
-			execCtx.Adapter.ExecutionError = &ExecutionError{
-				Phase:   string(PhaseResources),
-				Step:    resource.Name,
-				Message: err.Error(),
-			}
-			errCtx := logger.WithK8sResult(ctx, "FAILED")
-			errCtx = logger.WithErrorField(errCtx, err)
-			re.log.Errorf(errCtx, "Resource[%s] apply failed", resource.Name)
-			return result, NewExecutorError(PhaseResources, resource.Name, "failed to apply resource", err)
-		}
-
-		result.Resource = appliedResource
-		successCtx := logger.WithK8sResult(ctx, "SUCCESS")
-		re.log.Infof(successCtx, "Resource[%s] applied successfully", resource.Name)
-
-		// Store resource in execution context
-		execCtx.Resources[resource.Name] = appliedResource
-		return result, nil
-	}
-
-	// Step 3: Handle complex cases with discovery or recreateOnChange
-	return re.executeResourceWithDiscovery(ctx, resource, manifest, execCtx)
+	// Step 2: Delegate to applyResource which handles discovery, generation comparison, and operations
+	return re.applyResource(ctx, resource, manifest, execCtx)
 }
 
-// executeResourceWithDiscovery handles resources with discovery config or recreateOnChange
-func (re *ResourceExecutor) executeResourceWithDiscovery(ctx context.Context, resource config_loader.Resource, manifest *unstructured.Unstructured, execCtx *ExecutionContext) (ResourceResult, error) {
+// applyResource handles resource discovery, generation comparison, and execution of operations.
+// It discovers existing resources (via Discovery config or by name), compares generations,
+// and performs the appropriate operation (create, update, recreate, or skip).
+func (re *ResourceExecutor) applyResource(ctx context.Context, resource config_loader.Resource, manifest *unstructured.Unstructured, execCtx *ExecutionContext) (ResourceResult, error) {
 	result := ResourceResult{
 		Name:         resource.Name,
 		Kind:         manifest.GetKind(),
@@ -129,39 +97,45 @@ func (re *ResourceExecutor) executeResourceWithDiscovery(ctx context.Context, re
 		Status:       StatusSuccess,
 	}
 
+	if re.k8sClient == nil {
+		result.Status = StatusFailed
+		result.Error = fmt.Errorf("kubernetes client not configured")
+		return result, NewExecutorError(PhaseResources, resource.Name, "kubernetes client not configured", result.Error)
+	}
+
 	gvk := manifest.GroupVersionKind()
 
 	// Discover existing resource
 	var existingResource *unstructured.Unstructured
 	var err error
 	if resource.Discovery != nil {
-		re.log.Debugf(ctx, "Discovering existing resource...")
+		// Use Discovery config to find existing resource (e.g., by label selector)
+		re.log.Debugf(ctx, "Discovering existing resource using discovery config...")
 		existingResource, err = re.discoverExistingResource(ctx, gvk, resource.Discovery, execCtx)
-		if err != nil && !apierrors.IsNotFound(err) {
-			if apperrors.IsRetryableDiscoveryError(err) {
-				// Transient/network error - log and continue, we'll try to create
-				re.log.Warnf(ctx, "Transient discovery error (continuing): %v", err)
-			} else {
-				// Fatal error (auth, permission, validation) - fail fast
-				result.Status = StatusFailed
-				result.Error = err
-				return result, NewExecutorError(PhaseResources, resource.Name, "failed to discover existing resource", err)
-			}
-		}
-		if existingResource != nil {
-			re.log.Debugf(ctx, "Existing resource found: %s/%s", existingResource.GetNamespace(), existingResource.GetName())
-		} else {
-			re.log.Debugf(ctx, "No existing resource found, will create")
-		}
+	} else {
+		// No Discovery config - lookup by name from manifest
+		re.log.Debugf(ctx, "Looking up existing resource by name...")
+		existingResource, err = re.k8sClient.GetResource(ctx, gvk, manifest.GetNamespace(), manifest.GetName())
+	}
+
+	// Fail fast on any error except NotFound (which means resource doesn't exist yet)
+	if err != nil && !apierrors.IsNotFound(err) {
+		result.Status = StatusFailed
+		result.Error = err
+		return result, NewExecutorError(PhaseResources, resource.Name, "failed to find existing resource", err)
+	}
+
+	if existingResource != nil {
+		re.log.Debugf(ctx, "Existing resource found: %s/%s", existingResource.GetNamespace(), existingResource.GetName())
+	} else {
+		re.log.Debugf(ctx, "No existing resource found, will create")
 	}
 
 	// Extract manifest generation once for use in comparison and logging
 	manifestGen := generation.GetGenerationFromUnstructured(manifest)
 
 	// Add observed_generation to context early so it appears in all subsequent logs
-	if manifestGen > 0 {
-		ctx = logger.WithObservedGeneration(ctx, manifestGen)
-	}
+	ctx = logger.WithObservedGeneration(ctx, manifestGen)
 
 	// Get existing generation (0 if not found)
 	var existingGen int64
@@ -169,27 +143,15 @@ func (re *ResourceExecutor) executeResourceWithDiscovery(ctx context.Context, re
 		existingGen = generation.GetGenerationFromUnstructured(existingResource)
 	}
 
-	// Compare generations to determine base operation
-	compareResult := generation.CompareGenerations(manifestGen, existingGen, existingResource != nil)
+	// Compare generations to determine operation
+	decision := generation.CompareGenerations(manifestGen, existingGen, existingResource != nil)
 
-	// Map manifest package operations to executor operations
-	switch compareResult.Operation {
-	case generation.OperationCreate:
-		result.Operation = OperationCreate
-		result.OperationReason = compareResult.Reason
-	case generation.OperationSkip:
-		result.Operation = OperationSkip
-		result.Resource = existingResource
-		result.OperationReason = compareResult.Reason
-	case generation.OperationUpdate:
-		// Check if recreateOnChange is enabled
-		if resource.RecreateOnChange {
-			result.Operation = OperationRecreate
-			result.OperationReason = fmt.Sprintf("%s, recreateOnChange=true", compareResult.Reason)
-		} else {
-			result.Operation = OperationUpdate
-			result.OperationReason = compareResult.Reason
-		}
+	// Handle recreateOnChange override
+	result.Operation = decision.Operation
+	result.OperationReason = decision.Reason
+	if decision.Operation == generation.OperationUpdate && resource.RecreateOnChange {
+		result.Operation = generation.OperationRecreate
+		result.OperationReason = fmt.Sprintf("%s, recreateOnChange=true", decision.Reason)
 	}
 
 	// Log the operation decision
@@ -198,14 +160,14 @@ func (re *ResourceExecutor) executeResourceWithDiscovery(ctx context.Context, re
 
 	// Execute the operation
 	switch result.Operation {
-	case OperationCreate:
+	case generation.OperationCreate:
 		result.Resource, err = re.createResource(ctx, manifest)
-	case OperationUpdate:
+	case generation.OperationUpdate:
 		result.Resource, err = re.updateResource(ctx, existingResource, manifest)
-	case OperationRecreate:
+	case generation.OperationRecreate:
 		result.Resource, err = re.recreateResource(ctx, existingResource, manifest)
-	case OperationSkip:
-		// No action needed, resource already set above
+	case generation.OperationSkip:
+		result.Resource = existingResource
 	}
 
 	if err != nil {

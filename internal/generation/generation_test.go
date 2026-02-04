@@ -123,13 +123,24 @@ func TestGetGeneration(t *testing.T) {
 			expected: 0,
 		},
 		{
-			name: "with other annotations",
+			name: "with other annotations only (no generation)",
 			meta: metav1.ObjectMeta{
 				Annotations: map[string]string{
 					"other": "value",
 				},
 			},
 			expected: 0,
+		},
+		{
+			name: "with generation and other annotations",
+			meta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					"other":                        "value",
+					"another/annotation":           "foo",
+					constants.AnnotationGeneration: "5",
+				},
+			},
+			expected: 5,
 		},
 	}
 
@@ -176,6 +187,20 @@ func TestGetGenerationFromUnstructured(t *testing.T) {
 			},
 			expected: 0,
 		},
+		{
+			name: "with generation and other annotations",
+			obj: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"metadata": map[string]interface{}{
+						"annotations": map[string]interface{}{
+							"other":                        "value",
+							constants.AnnotationGeneration: "42",
+						},
+					},
+				},
+			},
+			expected: 42,
+		},
 	}
 
 	for _, tt := range tests {
@@ -217,6 +242,16 @@ func TestValidateGeneration(t *testing.T) {
 			meta: metav1.ObjectMeta{
 				Annotations: map[string]string{
 					constants.AnnotationGeneration: "9999999999",
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "valid generation with other annotations",
+			meta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					"other":                        "value",
+					constants.AnnotationGeneration: "10",
 				},
 			},
 			expectError: false,
@@ -370,6 +405,23 @@ func TestValidateGenerationFromUnstructured(t *testing.T) {
 			},
 			expectError: true,
 		},
+		{
+			name: "valid generation with other annotations",
+			obj: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "v1",
+					"kind":       "Namespace",
+					"metadata": map[string]interface{}{
+						"name": "test",
+						"annotations": map[string]interface{}{
+							"other":                        "value",
+							constants.AnnotationGeneration: "15",
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -471,7 +523,7 @@ func TestValidateManifestWorkGeneration(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "manifest without generation annotation",
+			name: "manifest without generation annotation fails",
 			work: &workv1.ManifestWork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-work",
@@ -483,7 +535,7 @@ func TestValidateManifestWorkGeneration(t *testing.T) {
 					Workload: workv1.ManifestsTemplate{
 						Manifests: []workv1.Manifest{
 							createManifest("Namespace", "test-ns", "5"),
-							createManifestNoGeneration("ConfigMap", "test-cm"),
+							createManifestNoGeneration("ConfigMap", "test-cm"), // Missing generation - error
 						},
 					},
 				},

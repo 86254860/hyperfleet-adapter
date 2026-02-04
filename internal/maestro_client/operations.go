@@ -36,7 +36,7 @@ func (c *Client) CreateManifestWork(
 		return nil, apperrors.MaestroError("work for manifestwork cannot be nil")
 	}
 
-	// Validate that generation annotations are present (set by template)
+	// Validate that generation annotations are present (required on ManifestWork and all manifests)
 	if err := generation.ValidateManifestWorkGeneration(work); err != nil {
 		return nil, apperrors.MaestroError("invalid ManifestWork: %v", err)
 	}
@@ -196,7 +196,7 @@ func (c *Client) ApplyManifestWork(
 		return nil, apperrors.MaestroError("work cannot be nil")
 	}
 
-	// Validate that generation annotations are present (set by template)
+	// Validate that generation annotations are present (required on ManifestWork and all manifests)
 	if err := generation.ValidateManifestWorkGeneration(manifestWork); err != nil {
 		return nil, apperrors.MaestroError("invalid ManifestWork: %v", err)
 	}
@@ -225,15 +225,15 @@ func (c *Client) ApplyManifestWork(
 	}
 
 	// Compare generations to determine operation
-	compareResult := generation.CompareGenerations(newGeneration, existingGeneration, exists)
+	decision := generation.CompareGenerations(newGeneration, existingGeneration, exists)
 
 	c.log.WithFields(map[string]interface{}{
-		"operation": compareResult.Operation,
-		"reason":    compareResult.Reason,
+		"operation": decision.Operation,
+		"reason":    decision.Reason,
 	}).Debug(ctx, "Apply operation determined")
 
 	// Execute operation based on comparison result
-	switch compareResult.Operation {
+	switch decision.Operation {
 	case generation.OperationCreate:
 		return c.CreateManifestWork(ctx, consumerName, manifestWork)
 	case generation.OperationSkip:
@@ -245,9 +245,9 @@ func (c *Client) ApplyManifestWork(
 			return nil, apperrors.MaestroError("failed to create patch: %v", err)
 		}
 		return c.PatchManifestWork(ctx, consumerName, manifestWork.Name, patchData)
+	default:
+		return nil, apperrors.MaestroError("unexpected operation: %s", decision.Operation)
 	}
-
-	return nil, apperrors.MaestroError("unexpected operation: %s", compareResult.Operation)
 }
 
 // createManifestWorkPatch creates a JSON merge patch for updating a ManifestWork

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/generation"
 	apperrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -25,16 +24,6 @@ const EnvKubeConfig = "KUBECONFIG"
 type Client struct {
 	client client.Client
 	log    logger.Logger
-}
-
-// ApplyResourceResult contains the result of applying a single resource
-type ApplyResourceResult struct {
-	// Resource is the applied resource (created, updated, or existing)
-	Resource *unstructured.Unstructured
-	// Operation indicates what action was taken (create, update, skip)
-	Operation generation.Operation
-	// Error is set if the apply failed for this resource
-	Error error
 }
 
 // ClientConfig holds configuration for creating a Kubernetes client
@@ -378,116 +367,4 @@ func (c *Client) PatchResource(ctx context.Context, gvk schema.GroupVersionKind,
 
 	// Get the updated resource to return
 	return c.GetResource(ctx, gvk, namespace, name)
-}
-
-// ApplyResource creates or updates a Kubernetes resource (upsert operation)
-//
-// If the resource doesn't exist, it creates it.
-// If it exists and the generation differs, it updates the resource.
-// If it exists and the generation matches, it skips the update (idempotent).
-//
-// The resource must have a hyperfleet.io/generation annotation set.
-//
-// Parameters:
-//   - ctx: Context for the operation
-//   - obj: The resource to apply (must have generation annotation)
-//
-// Returns the created, updated, or existing resource, or an error
-func (c *Client) ApplyResource(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
-	if obj == nil {
-		return nil, apperrors.KubernetesError("resource cannot be nil")
-	}
-
-	// Validate that generation annotation is present
-	if err := generation.ValidateGenerationFromUnstructured(obj); err != nil {
-		return nil, apperrors.KubernetesError("invalid resource: %v", err)
-	}
-
-	gvk := obj.GroupVersionKind()
-	namespace := obj.GetNamespace()
-	name := obj.GetName()
-	newGeneration := generation.GetGenerationFromUnstructured(obj)
-
-	// Enrich context with common fields
-	ctx = logger.WithK8sKind(ctx, gvk.Kind)
-	ctx = logger.WithK8sName(ctx, name)
-	ctx = logger.WithK8sNamespace(ctx, namespace)
-	ctx = logger.WithObservedGeneration(ctx, newGeneration)
-
-	c.log.Debug(ctx, "Applying resource")
-
-	// Check if resource exists
-	existing, err := c.GetResource(ctx, gvk, namespace, name)
-	exists := err == nil
-	if err != nil && !apierrors.IsNotFound(err) {
-		return nil, err
-	}
-
-	// Get existing generation (0 if not found)
-	var existingGeneration int64
-	if exists {
-		existingGeneration = generation.GetGenerationFromUnstructured(existing)
-	}
-
-	// Compare generations to determine operation
-	compareResult := generation.CompareGenerations(newGeneration, existingGeneration, exists)
-
-	c.log.WithFields(map[string]interface{}{
-		"operation": compareResult.Operation,
-		"reason":    compareResult.Reason,
-	}).Debug(ctx, "Apply operation determined")
-
-	// Execute operation based on comparison result
-	switch compareResult.Operation {
-	case generation.OperationCreate:
-		return c.CreateResource(ctx, obj)
-	case generation.OperationSkip:
-		return existing, nil
-	case generation.OperationUpdate:
-		obj.SetResourceVersion(existing.GetResourceVersion())
-		return c.UpdateResource(ctx, obj)
-	}
-
-	return nil, apperrors.KubernetesError("unexpected operation: %s", compareResult.Operation)
-}
-
-// ApplyResources applies multiple resources in sequence (batch upsert)
-//
-// Each resource is applied using ApplyResource logic:
-//   - If the resource doesn't exist, it creates it
-//   - If it exists and generation differs, it updates it
-//   - If it exists and generation matches, it skips (idempotent)
-//
-// All resources must have a hyperfleet.io/generation annotation.
-//
-// Parameters:
-//   - ctx: Context for the operation
-//   - objs: Slice of resources to apply
-//
-// Returns results for each resource. Stops on first error.
-func (c *Client) ApplyResources(ctx context.Context, objs []*unstructured.Unstructured) ([]ApplyResourceResult, error) {
-	if len(objs) == 0 {
-		return nil, nil
-	}
-
-	c.log.WithFields(map[string]interface{}{
-		"count": len(objs),
-	}).Debug(ctx, "Applying resources")
-
-	results := make([]ApplyResourceResult, 0, len(objs))
-
-	for _, obj := range objs {
-		resource, err := c.ApplyResource(ctx, obj)
-		if err != nil {
-			results = append(results, ApplyResourceResult{Error: err})
-			return results, err
-		}
-		results = append(results, ApplyResourceResult{Resource: resource})
-	}
-
-	c.log.WithFields(map[string]interface{}{
-		"count": len(results),
-	}).Debug(ctx, "All resources applied")
-
-	return results, nil
 }

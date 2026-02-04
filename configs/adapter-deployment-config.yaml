@@ -7,14 +7,14 @@
 #
 # This is the minimal default configuration packaged with the container image.
 # In production, this should be overridden via:
-#   1. CONFIG_FILE environment variable (highest priority)
-#   2. ConfigMap mounted at /etc/adapter/config/adapter-deployment-config.yaml
+#   1. HYPERFLEET_ADAPTER_DEPLOYMENT_CONFIG environment variable (highest priority)
+#   2. ConfigMap mounted at /etc/adapter/adapter-deployment-config.yaml
 #
 # For business logic configuration (params, preconditions, resources, post-actions),
-# use a separate business config file. See configs/adapter-config-template.yaml
+# use a separate business config file. See configs/adapter-workflow-config-template.yaml
 
 apiVersion: hyperfleet.redhat.com/v1alpha1
-kind: AdapterConfig
+kind: AdapterDeploymentConfig
 metadata:
   name: hyperfleet-adapter
   namespace: hyperfleet-system

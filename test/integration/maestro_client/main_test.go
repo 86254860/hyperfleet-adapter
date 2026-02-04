@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ const (
 	MaestroImage = "quay.io/redhat-user-workloads/maestro-rhtap-tenant/maestro/maestro:latest"
 
 	// PostgresImage is the PostgreSQL container image
-	PostgresImage = "postgres:15-alpine"
+	PostgresImage = "docker.io/library/postgres:14.2"
 
 	// Default ports
 	PostgresPort      = "5432/tcp"
@@ -36,10 +37,11 @@ type MaestroTestEnv struct {
 	PostgresPort      string
 
 	// Maestro
-	MaestroContainer testcontainers.Container
-	MaestroHost      string
-	MaestroHTTPPort  string
-	MaestroGRPCPort  string
+	MaestroContainer  testcontainers.Container
+	MaestroHost       string
+	MaestroHTTPPort   string
+	MaestroGRPCPort   string
+	MaestroHealthPort string
 
 	// Connection strings
 	MaestroServerAddr string // HTTP API address (e.g., "http://localhost:32000")
@@ -49,7 +51,11 @@ type MaestroTestEnv struct {
 // sharedEnv holds the shared test environment for all integration tests
 var sharedEnv *MaestroTestEnv
 
-// setupErr holds any error that occurred during setup
+// skipReason holds reason to skip tests (e.g., ARM64 without local image, no container runtime)
+var skipReason string
+
+// setupErr holds any error that occurred during setup (consumer registration, container start, etc.)
+// These errors should cause test FAILURE, not skip.
 var setupErr error
 
 // TestMain runs before all tests to set up the shared containers
@@ -63,7 +69,20 @@ func TestMain(m *testing.M) {
 
 	// Check if SKIP_MAESTRO_INTEGRATION_TESTS is set
 	if os.Getenv("SKIP_MAESTRO_INTEGRATION_TESTS") == "true" {
+		skipReason = "SKIP_MAESTRO_INTEGRATION_TESTS is set"
 		println("⚠️  SKIP_MAESTRO_INTEGRATION_TESTS is set, skipping maestro_client integration tests")
+		os.Exit(m.Run())
+	}
+
+	// Skip on ARM64 Macs unless MAESTRO_ARM64_TEST is set (user has local ARM64 image)
+	// To run on ARM64, build a local image from the Maestro source and tag it as:
+	// quay.io/redhat-user-workloads/maestro-rhtap-tenant/maestro/maestro:latest
+	if runtime.GOARCH == "arm64" && os.Getenv("MAESTRO_ARM64_TEST") != "true" {
+		skipReason = "ARM64 architecture without MAESTRO_ARM64_TEST=true (set this env if you have a local ARM64 Maestro image)"
+		println("⚠️  Skipping Maestro integration tests on ARM64")
+		println("   The official Maestro image is amd64 only.")
+		println("   To run locally, build from source and set MAESTRO_ARM64_TEST=true:")
+		println("   cd /path/to/maestro && podman build -t quay.io/redhat-user-workloads/maestro-rhtap-tenant/maestro/maestro:latest .")
 		os.Exit(m.Run())
 	}
 
@@ -73,7 +92,7 @@ func TestMain(m *testing.M) {
 
 	provider, err := testcontainers.NewDockerProvider()
 	if err != nil {
-		setupErr = err
+		skipReason = fmt.Sprintf("container runtime not available: %v", err)
 		println("⚠️  Warning: Could not connect to container runtime:", err.Error())
 		println("   Tests will be skipped")
 	} else {
@@ -81,7 +100,7 @@ func TestMain(m *testing.M) {
 		_ = provider.Close()
 
 		if err != nil {
-			setupErr = err
+			skipReason = fmt.Sprintf("container runtime info not available: %v", err)
 			println("⚠️  Warning: Could not get container runtime info:", err.Error())
 			println("   Tests will be skipped")
 		} else {
@@ -91,9 +110,10 @@ func TestMain(m *testing.M) {
 			// Set up the shared environment
 			env, err := setupMaestroTestEnv()
 			if err != nil {
+				// Setup failures (including consumer registration) should FAIL tests, not skip
 				setupErr = err
 				println("❌ Failed to set up Maestro environment:", err.Error())
-				println("   Tests will be skipped")
+				println("   Tests will FAIL")
 			} else {
 				sharedEnv = env
 				println("✅ Maestro test environment ready!")
@@ -118,17 +138,22 @@ func TestMain(m *testing.M) {
 }
 
 // GetSharedEnv returns the shared test environment.
-// If setup failed or environment is not initialized (e.g., short mode), the test will be skipped.
+// - If there's a skipReason (ARM64, no container runtime), tests are skipped
+// - If there's a setupErr (consumer registration, container start failed), tests FAIL
+// - If in short mode, tests are skipped
 func GetSharedEnv(t *testing.T) *MaestroTestEnv {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
+	if skipReason != "" {
+		t.Skipf("Skipping: %s", skipReason)
+	}
 	if setupErr != nil {
-		t.Skipf("Maestro environment setup failed: %v", setupErr)
+		t.Fatalf("Maestro environment setup failed: %v", setupErr)
 	}
 	if sharedEnv == nil {
-		t.Skip("Shared test environment is not initialized")
+		t.Fatal("Shared test environment is not initialized")
 	}
 	return sharedEnv
 }
