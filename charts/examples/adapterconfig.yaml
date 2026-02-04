@@ -177,23 +177,25 @@ spec:
             - type: "Applied"
               status:
                 expression: |
-                  has(resources.jobNamespace) ? "True" : "False"
+                  has(resources.jobNamespace.spec) ? "True" : "False"
               reason:
                 expression: |
-                  has(resources.jobNamespace)
+                  has(resources.jobNamespace.spec)
                     ? "JobApplied"
                     : "JobPending"
               message:
                 expression: |
                   has(resources.jobNamespace)
-                    ? "Validation job applied successfully"
-                    : "Validation job is pending to applied"
+                    ? "jobNamespace manifest applied successfully"
+                    : "jobNamespace is pending to be applied"
             # Available: Check job status conditions
             - type: "Available"
               status:
                 expression: |
-                  resources.?jobNamespace.?status.?conditions.orValue([]).exists(c, c.type == "Available")
-                    ? resources.jobNamespace.status.conditions.filter(c, c.type == "Available")[0].status : "False"
+                  has(resources.jobNamespace.status.conditions) ?
+                   ( resources.?jobNamespace.?status.?conditions.orValue([]).exists(c, c.type == "Available")
+                    ? resources.jobNamespace.status.conditions.filter(c, c.type == "Available")[0].status : "False")
+                   : "Unknown"
               reason:
                 expression: |
                   resources.?jobNamespace.?status.?conditions.orValue([]).exists(c, c.type == "Available")
