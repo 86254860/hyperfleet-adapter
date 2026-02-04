@@ -212,7 +212,7 @@ spec:
             - type: "Health"
               status:
                 expression: |
-                  adapter.?executionStatus.orValue("") == "success" ? "True" : (adapter.?executionStatus.orValue("") == "failed" ? "False" : "Unknown")
+                  adapter.?executionStatus.orValue("") == "success" ? "True" : "False"
               reason:
                 expression: |
                   adapter.?errorReason.orValue("") != "" ? adapter.?errorReason.orValue("") : "Healthy"
