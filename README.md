@@ -14,7 +14,6 @@ An instance of an adapter targets an specific resource such as a Cluster or Node
 - **Status reporting**: Reports result of task execution to HyperFleet API
   - Builds the payload evaluating the status of the resources created in the resource phase
 
-
 ## Prerequisites
 
 - Go 1.24.6 or later
@@ -125,10 +124,12 @@ hyperfleet-adapter/
 HyperFleet Adapter uses [bingo](https://github.com/bwplotka/bingo) to manage Go tool dependencies with pinned versions.
 
 **Managed tools**:
+
 - `goimports` - Code formatting and import organization
 - `golangci-lint` - Code linting
 
 **Common operations**:
+
 ```bash
 # Install all tools
 bingo get
@@ -170,8 +171,6 @@ Broker configuration is managed separately and can be provided via:
 
 See the Helm chart documentation for broker configuration options.
 
-
-
 ## Deployment
 
 ### Using Helm Chart
@@ -183,7 +182,7 @@ The project includes a Helm chart for Kubernetes deployment.
 helm install hyperfleet-adapter ./charts/
 
 # Install with custom values
-helm install hyperfleet-adapter ./charts/ -f custom-values.yaml
+helm install hyperfleet-adapter ./charts/ -f ./charts/examples/values.yaml
 
 # Upgrade deployment
 helm upgrade hyperfleet-adapter ./charts/
@@ -230,11 +229,13 @@ make test
 ```
 
 Unit tests include:
+
 - Logger functionality and context handling
 - Error handling and error codes
 - Operation ID middleware
 - Template rendering and parsing
 - Kubernetes client logic
+
 ### Integration Tests
 
 Integration tests use **Testcontainers** with **dynamically installed envtest** - works in any CI/CD platform without requiring privileged containers.
@@ -280,6 +281,7 @@ The first run will download golang:alpine and install envtest (~20-30 seconds). 
 **Performance**: ~30-40 seconds for complete test suite (10 suites, 24 test cases).
 
 **Alternative**: Use K3s (`make test-integration-k3s`) for 2x faster tests if privileged containers are available.
+
 - ⚠️ Requires Docker or rootful Podman
 - ✅ Makefile automatically checks Podman mode and provides helpful instructions if incompatible
 

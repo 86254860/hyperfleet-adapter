@@ -3,12 +3,10 @@
 apiVersion: hyperfleet.redhat.com/v1alpha1
 kind: AdapterConfig
 metadata:
-  name: example2-job
-  namespace: hyperfleet-system
+  name: example1-namespace
   labels:
-    hyperfleet.io/adapter-type: example2-job
+    hyperfleet.io/adapter-type: example1-namespace
     hyperfleet.io/component: adapter
-
 spec:
   adapter:
     version: "0.1.0"
@@ -36,6 +34,11 @@ spec:
     - name: "clusterId"
       source: "event.id"
       type: "string"
+      required: true
+
+    - name: "generation"
+      source: "event.generation"
+      type: "int"
       required: true
 
     - name: "namespace"
@@ -85,6 +88,24 @@ spec:
 
   # Resources with valid K8s manifests
   resources:
+    - name: "clusterNamespace"
+      manifest:
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: "cluster-{{ .clusterId }}"
+          labels:
+            hyperfleet.io/cluster-id: "{{ .clusterId }}"
+            hyperfleet.io/cluster-name: "{{ .clusterName }}"
+          annotations:
+            hyperfleet.io/generation: "{{ .generationSpec }}"
+      discovery:
+        namespace: "*"  # Cluster-scoped resource (Namespace)
+        bySelectors:
+          labelSelector:
+            hyperfleet.io/cluster-id: "{{ .clusterId }}"
+            hyperfleet.io/cluster-name: "{{ .clusterName }}"
+
     - name: "job"
       manifest:
         ref: "/etc/adapter/job.yaml"
@@ -94,76 +115,74 @@ spec:
           labelSelector:
             hyperfleet.io/generation: "{{ .generationSpec }}"
             hyperfleet.io/cluster-id: "{{ .clusterId }}"
-  # Post-processing with valid CEL expressions
 
+    - name: "deployment"
+      manifest:
+        ref: "/etc/adapter/deployment.yaml"
+      discovery:
+        namespace: "*"
+        bySelectors:
+          labelSelector:
+            hyperfleet.io/generation: "{{ .generationSpec }}"
+            hyperfleet.io/cluster-id: "{{ .clusterId }}"
+
+      # Post-processing with valid CEL expressions
   post:
     payloads:
-      # Build status payload inline
-      - name: "jobStatusPayload"
+      - name: "clusterStatusPayload"
         build:
           adapter: "{{ .metadata.name }}"
           conditions:
-            # Applied: Job successfully created
             - type: "Applied"
               status:
                 expression: |
-                  has(resources.job) ? "True" : "False"
+                  resources.clusterNamespace.status.phase == "Active" ? "True" : "False"
               reason:
                 expression: |
-                  has(resources.job)
-                    ? "JobApplied"
-                    : "JobPending"
+                  has(resources.clusterNamespace.status.phase) ? "ResourcesCreated" : "Pending"
               message:
                 expression: |
-                  has(resources.job)
-                    ? "Validation job applied successfully"
-                    : "Validation job is pending to applied"
-            # Available: Check job status conditions
+                  "Namespace status: " + resources.clusterNamespace.status.phase
+
             - type: "Available"
               status:
                 expression: |
-                  resources.?job.?status.?conditions.orValue([]).exists(c, c.type == "Available")
-                    ? resources.job.status.conditions.filter(c, c.type == "Available")[0].status : "False"
+                  resources.clusterNamespace.status.phase == "Active" ? "True" : "False"
               reason:
                 expression: |
-                  resources.?job.?status.?conditions.orValue([]).exists(c, c.type == "Available")
-                    ? resources.job.status.conditions.filter(c, c.type == "Available")[0].reason
-                    : resources.?job.?status.?conditions.orValue([]).exists(c, c.type == "Failed") ? "ValidationFailed"
-                         : resources.?job.?status.hasValue() ? "ValidationInProgress" : "ValidationPending"
+                  "NamespaceAvailable"
               message:
                 expression: |
-                  resources.?job.?status.?conditions.orValue([]).exists(c, c.type == "Available")
-                    ? resources.job.status.conditions.filter(c, c.type == "Available")[0].message
-                    : resources.?job.?status.?conditions.orValue([]).exists(c, c.type == "Failed") ? "Validation failed"
-                         : resources.?job.?status.hasValue() ? "Validation in progress" : "Validation is pending"
-            # Health: Adapter execution status (runtime)
+                  "Namespace is available"
+
             - type: "Health"
               status:
                 expression: |
-                  adapter.?executionStatus.orValue("") == "success" ? "True" : (adapter.?executionStatus.orValue("") == "failed" ? "False" : "Unknown")
+                  "True"
               reason:
                 expression: |
-                  adapter.?errorReason.orValue("") != "" ? adapter.?errorReason.orValue("") : "Healthy"
+                  "Healthy"
               message:
                 expression: |
-                  adapter.?errorMessage.orValue("") != "" ? adapter.?errorMessage.orValue("") : "All adapter operations completed successfully"
-          # Event generation ID metadata field needs to use expression to avoid interpolation issues
+                  "All health checks passed"
+
+          data:
+            clusterReady:
+              expression: |
+                resources.clusterNamespace.status.phase == "Active"
+              description: "Cluster namespace is active"
+
           observed_generation:
             expression: "generationSpec"
+
           observed_time: "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
-    # ============================================================================
-    # Post Actions
-    # ============================================================================
+
     postActions:
       - name: "reportClusterStatus"
         apiCall:
           method: "POST"
           url: "{{ .hyperfleetApiBaseUrl }}/api/hyperfleet/{{ .hyperfleetApiVersion }}/clusters/{{ .clusterId }}/statuses"
-          body: "{{ .jobStatusPayload }}"
-          timeout: 30s
-          retryAttempts: 3
-          retryBackoff: "exponential"
           headers:
             - name: "Content-Type"
               value: "application/json"
-
+          body: "{{ .clusterStatusPayload }}"

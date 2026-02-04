@@ -11,7 +11,7 @@ HyperFleet Adapter - Event-driven adapter for HyperFleet cluster provisioning. C
 ## Installing the Chart
 
 ```bash
-helm install hyperfleet-adapter ./charts/ -f custom-values-file.yaml
+helm install hyperfleet-adapter ./charts/ -f ./charts/examples/values.yaml
 ```
 
 ## Uninstalling the Chart
@@ -146,7 +146,7 @@ The adapter is a message consumer but exposes some HTTP endpoints by default.
 
 ```bash
 helm install hyperfleet-adapter ./charts/ \
-  -f my-values.yaml \
+  -f ./charts/examples/values.yaml \
   --set image.registry=quay.io/my-quay-registry \
   --set broker.create=true \
   --set broker.googlepubsub.projectId=my-gcp-project \

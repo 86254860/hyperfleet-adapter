@@ -1,8 +1,9 @@
 adapterConfig:
   create: true
   files:
-    adapterconfig.yaml: examples/example2-job/adapterconfig.yaml
-    job.yaml : examples/example2-job/job.yaml
+    adapterconfig.yaml: examples/adapterconfig.yaml
+    job.yaml: examples/job.yaml
+    deployment.yaml: examples/deployment.yaml
   log:
     level: debug
 
@@ -15,6 +16,7 @@ broker:
     deadLetterTopic: CHANGE_ME
 
 image:
+  registry: CHANGE_ME
   repository: hyperfleet-adapter
   pullPolicy: Always
   tag: latest
@@ -36,6 +38,7 @@ rbac:
      - namespaces
      - serviceaccounts
      - configmaps
-     - jobs
+     - deployments
      - roles
      - rolebindings
+     - jobs
