@@ -6,13 +6,16 @@ import (
 
 	"github.com/mitchellh/copystructure"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/config_loader"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/maestro_client"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transport_client"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/constants"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	workv1 "open-cluster-management.io/api/work/v1"
 )
 
 // ResourceExecutor creates and updates Kubernetes resources
@@ -95,9 +98,10 @@ func (re *ResourceExecutor) applyResource(ctx context.Context, resource config_l
 		Status:       StatusSuccess,
 	}
 
-	if re.client == nil {
+	transportClient := re.client
+	if transportClient == nil {
 		result.Status = StatusFailed
-		result.Error = fmt.Errorf("transport client not configured")
+		result.Error = fmt.Errorf("transport client not configured for %s", resource.GetTransportClient())
 		return result, NewExecutorError(PhaseResources, resource.Name, "transport client not configured", result.Error)
 	}
 
@@ -109,11 +113,11 @@ func (re *ResourceExecutor) applyResource(ctx context.Context, resource config_l
 	if resource.Discovery != nil {
 		// Use Discovery config to find existing resource (e.g., by label selector)
 		re.log.Debugf(ctx, "Discovering existing resource using discovery config...")
-		existingResource, err = re.discoverExistingResource(ctx, gvk, resource.Discovery, execCtx)
+		existingResource, err = re.discoverExistingResource(ctx, gvk, resource.Discovery, execCtx, transportClient)
 	} else {
 		// No Discovery config - lookup by name from manifest
 		re.log.Debugf(ctx, "Looking up existing resource by name...")
-		existingResource, err = re.client.GetResource(ctx, gvk, resourceManifest.GetNamespace(), resourceManifest.GetName(), nil)
+		existingResource, err = transportClient.GetResource(ctx, gvk, resourceManifest.GetNamespace(), resourceManifest.GetName(), nil)
 	}
 
 	// Fail fast on any error except NotFound (which means resource doesn't exist yet)
@@ -139,13 +143,48 @@ func (re *ResourceExecutor) applyResource(ctx context.Context, resource config_l
 		applyOpts = &transport_client.ApplyOptions{RecreateOnChange: true}
 	}
 
+	// Build transport context for maestro transport
+	var transportTarget transport_client.TransportContext
+	if resource.IsMaestroTransport() && resource.Transport.Maestro != nil {
+		// Render targetCluster template
+		targetCluster, tplErr := renderTemplate(resource.Transport.Maestro.TargetCluster, execCtx.Params)
+		if tplErr != nil {
+			result.Status = StatusFailed
+			result.Error = tplErr
+			return result, NewExecutorError(PhaseResources, resource.Name, "failed to render targetCluster template", tplErr)
+		}
+
+		// Convert rendered manifest to *workv1.ManifestWork for the maestro transport context
+		mw := &workv1.ManifestWork{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(resourceManifest.Object, mw); err != nil {
+			result.Status = StatusFailed
+			result.Error = err
+			return result, NewExecutorError(PhaseResources, resource.Name, "failed to convert manifest to ManifestWork", err)
+		}
+
+		transportTarget = &maestro_client.TransportContext{
+			ConsumerName: targetCluster,
+			ManifestWork: mw,
+		}
+	}
+
+	// For Maestro transport with inline workload manifests in the ManifestWork template
+	// (resource.Manifest == nil), pass nil Manifest so buildManifestWork uses the
+	// template's workload manifests as-is instead of double-wrapping the ManifestWork
+	// inside its own workload.
+	manifestForApply := resourceManifest
+	if resource.IsMaestroTransport() && resource.Manifest == nil {
+		manifestForApply = nil
+	}
+
 	// Use transport client to apply the resource
-	applyResult, err := re.client.ApplyResources(ctx, []transport_client.ResourceToApply{
+	applyResult, err := transportClient.ApplyResources(ctx, []transport_client.ResourceToApply{
 		{
 			Name:     resource.Name,
-			Manifest: resourceManifest,
+			Manifest: manifestForApply,
 			Existing: existingResource,
 			Options:  applyOpts,
+			Target:   transportTarget,
 		},
 	})
 
@@ -194,15 +233,23 @@ func (re *ResourceExecutor) applyResource(ctx context.Context, resource config_l
 func (re *ResourceExecutor) buildManifest(ctx context.Context, resource config_loader.Resource, execCtx *ExecutionContext) (*unstructured.Unstructured, error) {
 	var manifestData map[string]interface{}
 
-	// Get manifest (inline or loaded from ref)
+	// Get manifest source based on transport type
+	var manifestSource interface{}
 	if resource.Manifest != nil {
-		switch m := resource.Manifest.(type) {
+		manifestSource = resource.Manifest
+	} else if resource.IsMaestroTransport() && resource.Transport.Maestro != nil && resource.Transport.Maestro.ManifestWork != nil {
+		// For maestro transport, use manifestWork as the manifest source
+		manifestSource = resource.Transport.Maestro.ManifestWork
+	}
+
+	if manifestSource != nil {
+		switch m := manifestSource.(type) {
 		case map[string]interface{}:
 			manifestData = m
 		case map[interface{}]interface{}:
 			manifestData = convertToStringKeyMap(m)
 		default:
-			return nil, fmt.Errorf("unsupported manifest type: %T", resource.Manifest)
+			return nil, fmt.Errorf("unsupported manifest type: %T", manifestSource)
 		}
 	} else {
 		return nil, fmt.Errorf("no manifest specified for resource %s", resource.Name)
@@ -250,8 +297,8 @@ func validateManifest(obj *unstructured.Unstructured) error {
 }
 
 // discoverExistingResource discovers an existing resource using the discovery config
-func (re *ResourceExecutor) discoverExistingResource(ctx context.Context, gvk schema.GroupVersionKind, discovery *config_loader.DiscoveryConfig, execCtx *ExecutionContext) (*unstructured.Unstructured, error) {
-	if re.client == nil {
+func (re *ResourceExecutor) discoverExistingResource(ctx context.Context, gvk schema.GroupVersionKind, discovery *config_loader.DiscoveryConfig, execCtx *ExecutionContext, client transport_client.TransportClient) (*unstructured.Unstructured, error) {
+	if client == nil {
 		return nil, fmt.Errorf("transport client not configured")
 	}
 
@@ -268,7 +315,7 @@ func (re *ResourceExecutor) discoverExistingResource(ctx context.Context, gvk sc
 		if err != nil {
 			return nil, fmt.Errorf("failed to render byName template: %w", err)
 		}
-		return re.client.GetResource(ctx, gvk, namespace, name, nil)
+		return client.GetResource(ctx, gvk, namespace, name, nil)
 	}
 
 	// Discover by label selector
@@ -294,7 +341,7 @@ func (re *ResourceExecutor) discoverExistingResource(ctx context.Context, gvk sc
 			LabelSelector: labelSelector,
 		}
 
-		list, err := re.client.DiscoverResources(ctx, gvk, discoveryConfig, nil)
+		list, err := client.DiscoverResources(ctx, gvk, discoveryConfig, nil)
 		if err != nil {
 			return nil, err
 		}

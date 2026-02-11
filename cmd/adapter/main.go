@@ -13,6 +13,7 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/executor"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleet_api"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8s_client"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/maestro_client"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/health"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/otel"
@@ -276,23 +277,37 @@ func runServe() error {
 		return fmt.Errorf("failed to create HyperFleet API client: %w", err)
 	}
 
-	// Create Kubernetes client
-	log.Info(ctx, "Creating Kubernetes client...")
-	k8sClient, err := createK8sClient(ctx, config.Spec.Clients.Kubernetes, log)
-	if err != nil {
-		errCtx := logger.WithErrorField(ctx, err)
-		log.Errorf(errCtx, "Failed to create Kubernetes client")
-		return fmt.Errorf("failed to create Kubernetes client: %w", err)
+	// Create transport client - only one transport is supported per adapter instance
+	execBuilder := executor.NewBuilder().
+		WithConfig(config).
+		WithAPIClient(apiClient).
+		WithLogger(log)
+
+	if config.Spec.Clients.Maestro != nil {
+		log.Info(ctx, "Creating Maestro transport client...")
+		maestroClient, err := createMaestroClient(ctx, config.Spec.Clients.Maestro, log)
+		if err != nil {
+			errCtx := logger.WithErrorField(ctx, err)
+			log.Errorf(errCtx, "Failed to create Maestro client")
+			return fmt.Errorf("failed to create Maestro client: %w", err)
+		}
+		execBuilder = execBuilder.WithTransportClient(maestroClient)
+		log.Info(ctx, "Maestro transport client created successfully")
+	} else {
+		log.Info(ctx, "Creating Kubernetes transport client...")
+		k8sClient, err := createK8sClient(ctx, config.Spec.Clients.Kubernetes, log)
+		if err != nil {
+			errCtx := logger.WithErrorField(ctx, err)
+			log.Errorf(errCtx, "Failed to create Kubernetes client")
+			return fmt.Errorf("failed to create Kubernetes client: %w", err)
+		}
+		execBuilder = execBuilder.WithTransportClient(k8sClient)
+		log.Info(ctx, "Kubernetes transport client created successfully")
 	}
 
 	// Create the executor using the builder pattern
 	log.Info(ctx, "Creating event executor...")
-	exec, err := executor.NewBuilder().
-		WithConfig(config).
-		WithAPIClient(apiClient).
-		WithTransportClient(k8sClient).
-		WithLogger(log).
-		Build()
+	exec, err := execBuilder.Build()
 	if err != nil {
 		errCtx := logger.WithErrorField(ctx, err)
 		log.Errorf(errCtx, "Failed to create executor")
@@ -493,4 +508,23 @@ func createK8sClient(ctx context.Context, k8sConfig config_loader.KubernetesConf
 		Burst:          k8sConfig.Burst,
 	}
 	return k8s_client.NewClient(ctx, clientConfig, log)
+}
+
+// createMaestroClient creates a Maestro client from the config
+func createMaestroClient(ctx context.Context, maestroConfig *config_loader.MaestroClientConfig, log logger.Logger) (*maestro_client.Client, error) {
+	config := &maestro_client.Config{
+		MaestroServerAddr: maestroConfig.HTTPServerAddress,
+		GRPCServerAddr:    maestroConfig.GRPCServerAddress,
+		SourceID:          maestroConfig.SourceID,
+		Insecure:          maestroConfig.Insecure,
+	}
+
+	// Set TLS config if present
+	if maestroConfig.Auth.TLSConfig != nil {
+		config.CAFile = maestroConfig.Auth.TLSConfig.CAFile
+		config.ClientCertFile = maestroConfig.Auth.TLSConfig.CertFile
+		config.ClientKeyFile = maestroConfig.Auth.TLSConfig.KeyFile
+	}
+
+	return maestro_client.NewMaestroClient(ctx, config, log)
 }
