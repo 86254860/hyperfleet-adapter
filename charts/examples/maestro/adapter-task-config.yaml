@@ -1,0 +1,180 @@
+# Example HyperFleet Adapter task configuration
+apiVersion: hyperfleet.redhat.com/v1alpha1
+kind: AdapterTaskConfig
+metadata:
+  name: example1-namespace
+  labels:
+    hyperfleet.io/adapter-type: example1-namespace
+    hyperfleet.io/component: adapter
+spec:
+  # Parameters with all required variables
+  params:
+
+    - name: "clusterId"
+      source: "event.id"
+      type: "string"
+      required: true
+
+    - name: "generationId"
+      source: "event.generation"
+      type: "int"
+      required: true
+
+    - name: "simulateResult"
+      source: "env.SIMULATE_RESULT"
+      type: "string"
+      required: true
+
+
+  # Preconditions with valid operators and CEL expressions
+  preconditions:
+    - name: "clusterStatus"
+      apiCall:
+        method: "GET"
+        url: "/clusters/{{ .clusterId }}"
+        timeout: 10s
+        retryAttempts: 3
+        retryBackoff: "exponential"
+      capture:
+        - name: "clusterName"
+          field: "name"
+        - name: "generationId"
+          field: "generation"
+        - name: "timestamp"
+          field: "created_time"
+        - name: "readyConditionStatus"
+          expression: |
+            status.conditions.filter(c, c.type == "Ready").size() > 0
+              ? status.conditions.filter(c, c.type == "Ready")[0].status
+              : "False"
+
+        - name: "placementClusterName"
+          expression: "\"cluster1\""  # TBC coming from placement adapter
+          description: "Unique identifier for the target maestro"
+
+        - name: "adapterName"
+          expression: "\"adapter1\""  # TBC coming from config passed to params
+          description: "Unique identifier for the adapter"
+
+      # Structured conditions with valid operators
+      conditions:
+        - field: "readyConditionStatus"
+          operator: "equals"
+          value: "False"
+
+    - name: "validationCheck"
+      # Valid CEL expression
+      expression: |
+        readyConditionStatus == "False"
+
+  # Resources with valid K8s manifests
+  resources:
+    - name: "agentNamespaceManifestWork"
+      transport:
+        client: "maestro"
+        maestro:
+          targetCluster: "{{ .placementClusterName }}"
+          # manifestWork supports both inline configuration and and ref approaches
+          # ref is suggested as the file method is more readable and maintainable.
+          manifestWork:
+            ref: "/etc/adapter/manifestwork.yaml"
+          discovery:
+            # The "namespace" field within discovery is optional:
+            # - For namespaced resources: set namespace to target the specific namespace
+            # - For cluster-scoped resources (like Namespace, ClusterRole): omit or leave empty
+            # Here we omit it since Namespace is cluster-scoped
+            bySelectors:
+              labelSelector:
+                hyperfleet.io/resource-type: "namespace"
+                hyperfleet.io/cluster-id: "{{ .clusterId }}"
+                hyperfleet.io/managed-by: "{{ .metadata.name }}"
+      discovery:
+        # The "namespace" field within discovery is optional:
+        # - For namespaced resources: set namespace to target the specific namespace
+        # - For cluster-scoped resources (like Namespace, ClusterRole): omit or leave empty
+        # Here we omit it since Namespace is cluster-scoped
+        bySelectors:
+          labelSelector:
+            hyperfleet.io/resource-type: "namespace"
+            hyperfleet.io/cluster-id: "{{ .clusterId }}"
+            hyperfleet.io/managed-by: "{{ .metadata.name }}"
+
+
+  # Post-processing with valid CEL expressions
+  # This example contains multiple resources, we will only report on the conditions of the jobNamespace not to overcomplicate the example
+  post:
+    payloads:
+      - name: "clusterStatusPayload"
+        build:
+          # Adapter name for tracking which adapter reported this status
+          adapter: "{{ .metadata.name }}"
+          
+          # Conditions array - each condition has type, status, reason, message
+          # Use CEL optional chaining ?.orValue() for safe field access
+          conditions:
+            # Applied: Resources successfully created
+            - type: "Applied"
+              status:
+                expression: |
+                  resources.?agentNamespaceManifestWork.agentNamespace.?status.?phase.orValue("") == "Active" ? "True" : "False"
+              reason:
+                expression: |
+                  resources.?agentNamespaceManifestWork.agentNamespace.?status.?phase.orValue("") == "Active"
+                    ? "NamespaceCreated"
+                    : "NamespacePending"
+              message:
+                expression: |
+                  resources.?agentNamespaceManifestWork.agentNamespace.?status.?phase.orValue("") == "Active"
+                    ? "Namespace created successfully"
+                    : "Namespace creation in progress"
+
+            # Available: Resources are active and ready
+            - type: "Available"
+              status:
+                expression: |
+                  resources.?agentNamespaceManifestWork.agentNamespace.?status.?phase.orValue("") == "Active" ? "True" : "False"
+              reason:
+                expression: |
+                  resources.?agentNamespaceManifestWork.agentNamespace.?status.?phase.orValue("") == "Active" ? "NamespaceReady" : "NamespaceNotReady"
+              message:
+                expression: |
+                  resources.?agentNamespaceManifestWork.agentNamespace.?status.?phase.orValue("") == "Active" ? "Namespace is active and ready" : "Namespace is not active and ready"
+
+            # Health: Adapter execution status (runtime) Don't need to update this. This can be reused from the adapter config.
+            - type: "Health"
+              status:
+                expression: |
+                  adapter.?executionStatus.orValue("") == "success" ? "True" : (adapter.?executionStatus.orValue("") == "failed" ? "False" : "Unknown")
+              reason:
+                expression: |
+                  adapter.?errorReason.orValue("") != "" ? adapter.?errorReason.orValue("") : "Healthy"
+              message:
+                expression: |
+                  adapter.?errorMessage.orValue("") != "" ? adapter.?errorMessage.orValue("") : "All adapter operations completed successfully"
+          
+          # Use CEL expression for numeric fields to preserve type (not Go template which outputs strings)
+          observed_generation:
+            expression: "generationId"
+            
+          # Use Go template with now and date functions for timestamps
+          observed_time: "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
+
+          # Optional data field for adapter-specific metrics extracted from resources
+          data:
+            namespace:
+              name:
+                expression: |
+                  resources.?clusterNamespace.?metadata.?name.orValue("")
+              status:
+                expression: |
+                  resources.?clusterNamespace.?status.?phase.orValue("")
+
+    postActions:
+      - name: "reportClusterStatus"
+        apiCall:
+          method: "POST"
+          url: "/clusters/{{ .clusterId }}/statuses"
+          headers:
+            - name: "Content-Type"
+              value: "application/json"
+          body: "{{ .clusterStatusPayload }}"

@@ -1,6 +1,8 @@
 package config_loader
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/criteria"
@@ -556,6 +558,409 @@ func TestFieldNameCachePopulated(t *testing.T) {
 		t.Run(field, func(t *testing.T) {
 			_, ok := fieldNameCache[field]
 			assert.True(t, ok, "field %s should be in cache", field)
+		})
+	}
+}
+
+// =============================================================================
+// Transport Config Validation Tests
+// =============================================================================
+
+func TestValidateTransportConfig(t *testing.T) {
+	t.Run("valid kubernetes transport", func(t *testing.T) {
+		cfg := baseTaskConfig()
+		cfg.Spec.Resources = []Resource{{
+			Name: "testNs",
+			Transport: &TransportConfig{
+				Client: TransportClientKubernetes,
+			},
+			Manifest: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "Namespace",
+				"metadata":   map[string]interface{}{"name": "test"},
+			},
+			Discovery: &DiscoveryConfig{Namespace: "*", ByName: "test"},
+		}}
+		v := newTaskValidator(cfg)
+		require.NoError(t, v.ValidateStructure())
+		require.NoError(t, v.ValidateSemantic())
+	})
+
+	t.Run("valid maestro transport with inline manifestWork", func(t *testing.T) {
+		cfg := baseTaskConfig()
+		cfg.Spec.Resources = []Resource{{
+			Name: "testMW",
+			Transport: &TransportConfig{
+				Client: TransportClientMaestro,
+				Maestro: &MaestroTransportConfig{
+					TargetCluster: "cluster1",
+					ManifestWork: map[string]interface{}{
+						"apiVersion": "work.open-cluster-management.io/v1",
+						"kind":       "ManifestWork",
+						"metadata":   map[string]interface{}{"name": "test-mw"},
+					},
+				},
+			},
+			Discovery: &DiscoveryConfig{
+				BySelectors: &SelectorConfig{
+					LabelSelector: map[string]string{"app": "test"},
+				},
+			},
+		}}
+		v := newTaskValidator(cfg)
+		require.NoError(t, v.ValidateStructure())
+		require.NoError(t, v.ValidateSemantic())
+	})
+
+	t.Run("valid maestro transport with manifest field", func(t *testing.T) {
+		cfg := baseTaskConfig()
+		cfg.Spec.Resources = []Resource{{
+			Name: "testMW",
+			Transport: &TransportConfig{
+				Client: TransportClientMaestro,
+				Maestro: &MaestroTransportConfig{
+					TargetCluster: "cluster1",
+				},
+			},
+			Manifest: map[string]interface{}{
+				"apiVersion": "work.open-cluster-management.io/v1",
+				"kind":       "ManifestWork",
+				"metadata":   map[string]interface{}{"name": "test-mw"},
+			},
+			Discovery: &DiscoveryConfig{
+				BySelectors: &SelectorConfig{
+					LabelSelector: map[string]string{"app": "test"},
+				},
+			},
+		}}
+		v := newTaskValidator(cfg)
+		require.NoError(t, v.ValidateStructure())
+		require.NoError(t, v.ValidateSemantic())
+	})
+
+	t.Run("unsupported transport client", func(t *testing.T) {
+		cfg := baseTaskConfig()
+		cfg.Spec.Resources = []Resource{{
+			Name: "testNs",
+			Transport: &TransportConfig{
+				Client: "unsupported",
+			},
+			Manifest: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "Namespace",
+				"metadata":   map[string]interface{}{"name": "test"},
+			},
+			Discovery: &DiscoveryConfig{ByName: "test"},
+		}}
+		v := newTaskValidator(cfg)
+		// Structure validation catches invalid oneof
+		err := v.ValidateStructure()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid")
+	})
+
+	t.Run("maestro transport missing maestro config", func(t *testing.T) {
+		cfg := baseTaskConfig()
+		cfg.Spec.Resources = []Resource{{
+			Name: "testMW",
+			Transport: &TransportConfig{
+				Client: TransportClientMaestro,
+				// Missing Maestro config
+			},
+			Discovery: &DiscoveryConfig{
+				BySelectors: &SelectorConfig{
+					LabelSelector: map[string]string{"app": "test"},
+				},
+			},
+		}}
+		v := newTaskValidator(cfg)
+		_ = v.ValidateStructure()
+		err := v.ValidateSemantic()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "maestro transport config is required")
+	})
+
+	t.Run("maestro transport missing targetCluster", func(t *testing.T) {
+		cfg := baseTaskConfig()
+		cfg.Spec.Resources = []Resource{{
+			Name: "testMW",
+			Transport: &TransportConfig{
+				Client: TransportClientMaestro,
+				Maestro: &MaestroTransportConfig{
+					// Missing TargetCluster
+					ManifestWork: map[string]interface{}{
+						"apiVersion": "work.open-cluster-management.io/v1",
+						"kind":       "ManifestWork",
+					},
+				},
+			},
+			Discovery: &DiscoveryConfig{
+				BySelectors: &SelectorConfig{
+					LabelSelector: map[string]string{"app": "test"},
+				},
+			},
+		}}
+		v := newTaskValidator(cfg)
+		// targetCluster is structurally required
+		err := v.ValidateStructure()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "targetCluster")
+	})
+
+	t.Run("maestro transport missing both manifest and manifestWork", func(t *testing.T) {
+		cfg := baseTaskConfig()
+		cfg.Spec.Resources = []Resource{{
+			Name: "testMW",
+			Transport: &TransportConfig{
+				Client: TransportClientMaestro,
+				Maestro: &MaestroTransportConfig{
+					TargetCluster: "cluster1",
+					// No ManifestWork
+				},
+			},
+			// No Manifest either
+			Discovery: &DiscoveryConfig{
+				BySelectors: &SelectorConfig{
+					LabelSelector: map[string]string{"app": "test"},
+				},
+			},
+		}}
+		v := newTaskValidator(cfg)
+		_ = v.ValidateStructure()
+		err := v.ValidateSemantic()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "either manifestWork or manifest must be set")
+	})
+
+	t.Run("kubernetes transport missing manifest", func(t *testing.T) {
+		cfg := baseTaskConfig()
+		cfg.Spec.Resources = []Resource{{
+			Name: "testNs",
+			Transport: &TransportConfig{
+				Client: TransportClientKubernetes,
+			},
+			// Missing Manifest
+			Discovery: &DiscoveryConfig{ByName: "test"},
+		}}
+		v := newTaskValidator(cfg)
+		_ = v.ValidateStructure()
+		err := v.ValidateSemantic()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "manifest is required for kubernetes transport")
+	})
+
+	t.Run("no transport defaults to kubernetes - manifest required", func(t *testing.T) {
+		cfg := baseTaskConfig()
+		cfg.Spec.Resources = []Resource{{
+			Name: "testNs",
+			// No Transport (defaults to kubernetes)
+			// No Manifest
+			Discovery: &DiscoveryConfig{ByName: "test"},
+		}}
+		v := newTaskValidator(cfg)
+		_ = v.ValidateStructure()
+		err := v.ValidateSemantic()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "manifest is required for kubernetes transport")
+	})
+
+	t.Run("maestro transport with template variable in targetCluster", func(t *testing.T) {
+		cfg := baseTaskConfig()
+		cfg.Spec.Params = []Parameter{{Name: "clusterName", Source: "event.name"}}
+		cfg.Spec.Resources = []Resource{{
+			Name: "testMW",
+			Transport: &TransportConfig{
+				Client: TransportClientMaestro,
+				Maestro: &MaestroTransportConfig{
+					TargetCluster: "{{ .clusterName }}",
+					ManifestWork: map[string]interface{}{
+						"apiVersion": "work.open-cluster-management.io/v1",
+						"kind":       "ManifestWork",
+						"metadata":   map[string]interface{}{"name": "test"},
+					},
+				},
+			},
+			Discovery: &DiscoveryConfig{
+				BySelectors: &SelectorConfig{
+					LabelSelector: map[string]string{"app": "test"},
+				},
+			},
+		}}
+		v := newTaskValidator(cfg)
+		require.NoError(t, v.ValidateStructure())
+		require.NoError(t, v.ValidateSemantic())
+	})
+
+	t.Run("maestro transport with undefined template variable in targetCluster", func(t *testing.T) {
+		cfg := baseTaskConfig()
+		cfg.Spec.Resources = []Resource{{
+			Name: "testMW",
+			Transport: &TransportConfig{
+				Client: TransportClientMaestro,
+				Maestro: &MaestroTransportConfig{
+					TargetCluster: "{{ .undefinedVar }}",
+					ManifestWork: map[string]interface{}{
+						"apiVersion": "work.open-cluster-management.io/v1",
+						"kind":       "ManifestWork",
+						"metadata":   map[string]interface{}{"name": "test"},
+					},
+				},
+			},
+			Discovery: &DiscoveryConfig{
+				BySelectors: &SelectorConfig{
+					LabelSelector: map[string]string{"app": "test"},
+				},
+			},
+		}}
+		v := newTaskValidator(cfg)
+		_ = v.ValidateStructure()
+		err := v.ValidateSemantic()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "undefined template variable \"undefinedVar\"")
+	})
+
+	t.Run("maestro transport skips K8s manifest validation", func(t *testing.T) {
+		// Maestro resources without a manifest field should skip K8s manifest validation
+		cfg := baseTaskConfig()
+		cfg.Spec.Resources = []Resource{{
+			Name: "testMW",
+			Transport: &TransportConfig{
+				Client: TransportClientMaestro,
+				Maestro: &MaestroTransportConfig{
+					TargetCluster: "cluster1",
+					ManifestWork: map[string]interface{}{
+						// ManifestWork content - not validated as K8s manifest
+						"apiVersion": "work.open-cluster-management.io/v1",
+						"kind":       "ManifestWork",
+					},
+				},
+			},
+			// No Manifest field - this should not trigger "missing apiVersion" etc.
+			Discovery: &DiscoveryConfig{
+				BySelectors: &SelectorConfig{
+					LabelSelector: map[string]string{"app": "test"},
+				},
+			},
+		}}
+		v := newTaskValidator(cfg)
+		require.NoError(t, v.ValidateStructure())
+		require.NoError(t, v.ValidateSemantic())
+	})
+}
+
+func TestValidateFileReferencesManifestWorkRef(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a test manifestWork file
+	manifestWorkDir := filepath.Join(tmpDir, "templates")
+	require.NoError(t, os.MkdirAll(manifestWorkDir, 0755))
+	manifestWorkFile := filepath.Join(manifestWorkDir, "manifestwork.yaml")
+	require.NoError(t, os.WriteFile(manifestWorkFile, []byte("apiVersion: work.open-cluster-management.io/v1\nkind: ManifestWork"), 0644))
+
+	tests := []struct {
+		name    string
+		config  *AdapterTaskConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid manifestWork ref",
+			config: &AdapterTaskConfig{
+				APIVersion: "hyperfleet.redhat.com/v1alpha1",
+				Kind:       "AdapterTaskConfig",
+				Metadata:   Metadata{Name: "test"},
+				Spec: AdapterTaskSpec{
+					Resources: []Resource{{
+						Name: "test",
+						Transport: &TransportConfig{
+							Client: TransportClientMaestro,
+							Maestro: &MaestroTransportConfig{
+								TargetCluster: "cluster1",
+								ManifestWork: map[string]interface{}{
+									"ref": "templates/manifestwork.yaml",
+								},
+							},
+						},
+						Discovery: &DiscoveryConfig{
+							BySelectors: &SelectorConfig{
+								LabelSelector: map[string]string{"app": "test"},
+							},
+						},
+					}},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid manifestWork ref - file not found",
+			config: &AdapterTaskConfig{
+				APIVersion: "hyperfleet.redhat.com/v1alpha1",
+				Kind:       "AdapterTaskConfig",
+				Metadata:   Metadata{Name: "test"},
+				Spec: AdapterTaskSpec{
+					Resources: []Resource{{
+						Name: "test",
+						Transport: &TransportConfig{
+							Client: TransportClientMaestro,
+							Maestro: &MaestroTransportConfig{
+								TargetCluster: "cluster1",
+								ManifestWork: map[string]interface{}{
+									"ref": "templates/nonexistent.yaml",
+								},
+							},
+						},
+						Discovery: &DiscoveryConfig{
+							BySelectors: &SelectorConfig{
+								LabelSelector: map[string]string{"app": "test"},
+							},
+						},
+					}},
+				},
+			},
+			wantErr: true,
+			errMsg:  "does not exist",
+		},
+		{
+			name: "inline manifestWork - no file reference validation needed",
+			config: &AdapterTaskConfig{
+				APIVersion: "hyperfleet.redhat.com/v1alpha1",
+				Kind:       "AdapterTaskConfig",
+				Metadata:   Metadata{Name: "test"},
+				Spec: AdapterTaskSpec{
+					Resources: []Resource{{
+						Name: "test",
+						Transport: &TransportConfig{
+							Client: TransportClientMaestro,
+							Maestro: &MaestroTransportConfig{
+								TargetCluster: "cluster1",
+								ManifestWork: map[string]interface{}{
+									"apiVersion": "work.open-cluster-management.io/v1",
+									"kind":       "ManifestWork",
+								},
+							},
+						},
+						Discovery: &DiscoveryConfig{
+							BySelectors: &SelectorConfig{
+								LabelSelector: map[string]string{"app": "test"},
+							},
+						},
+					}},
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			validator := NewTaskConfigValidator(tt.config, tmpDir)
+			err := validator.ValidateFileReferences()
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				assert.NoError(t, err)
+			}
 		})
 	}
 }

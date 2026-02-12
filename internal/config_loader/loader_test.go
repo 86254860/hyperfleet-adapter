@@ -535,7 +535,7 @@ spec:
 			errorMsg:  "spec.resources[0].name is required",
 		},
 		{
-			name: "resource without manifest",
+			name: "resource without manifest - kubernetes transport requires manifest in semantic validation",
 			yaml: `
 apiVersion: hyperfleet.redhat.com/v1alpha1
 kind: AdapterTaskConfig
@@ -544,9 +544,10 @@ metadata:
 spec:
   resources:
     - name: "testNamespace"
+      discovery:
+        byName: "test-ns"
 `,
-			wantError: true,
-			errorMsg:  "manifest is required",
+			wantError: false, // Manifest is no longer structurally required (validated semantically based on transport type)
 		},
 	}
 
@@ -1347,4 +1348,538 @@ values:
 	err := yaml.Unmarshal([]byte(yamlContent), &cond)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "condition has both 'value' and 'values' keys")
+}
+
+// =============================================================================
+// Transport Config Tests
+// =============================================================================
+
+func TestTransportConfigYAMLParsing(t *testing.T) {
+	tests := []struct {
+		name           string
+		yaml           string
+		wantError      bool
+		wantClient     string
+		wantTarget     string
+		wantMaestroNil bool
+	}{
+		{
+			name: "resource with kubernetes transport",
+			yaml: `
+apiVersion: hyperfleet.redhat.com/v1alpha1
+kind: AdapterTaskConfig
+metadata:
+  name: test-adapter
+spec:
+  resources:
+    - name: "testResource"
+      transport:
+        client: "kubernetes"
+      manifest:
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: "test-ns"
+      discovery:
+        byName: "test-ns"
+`,
+			wantError:      false,
+			wantClient:     "kubernetes",
+			wantMaestroNil: true,
+		},
+		{
+			name: "resource with maestro transport",
+			yaml: `
+apiVersion: hyperfleet.redhat.com/v1alpha1
+kind: AdapterTaskConfig
+metadata:
+  name: test-adapter
+spec:
+  resources:
+    - name: "testResource"
+      transport:
+        client: "maestro"
+        maestro:
+          targetCluster: "cluster1"
+          manifestWork:
+            apiVersion: work.open-cluster-management.io/v1
+            kind: ManifestWork
+            metadata:
+              name: "test-mw"
+      discovery:
+        byName: "test-mw"
+`,
+			wantError:      false,
+			wantClient:     "maestro",
+			wantTarget:     "cluster1",
+			wantMaestroNil: false,
+		},
+		{
+			name: "resource with maestro transport and manifestWork ref",
+			yaml: `
+apiVersion: hyperfleet.redhat.com/v1alpha1
+kind: AdapterTaskConfig
+metadata:
+  name: test-adapter
+spec:
+  resources:
+    - name: "testResource"
+      transport:
+        client: "maestro"
+        maestro:
+          targetCluster: "{{ .clusterName }}"
+          manifestWork:
+            ref: "/path/to/manifestwork.yaml"
+      discovery:
+        byName: "test-mw"
+`,
+			wantError:      false,
+			wantClient:     "maestro",
+			wantTarget:     "{{ .clusterName }}",
+			wantMaestroNil: false,
+		},
+		{
+			name: "resource without transport (defaults to kubernetes)",
+			yaml: `
+apiVersion: hyperfleet.redhat.com/v1alpha1
+kind: AdapterTaskConfig
+metadata:
+  name: test-adapter
+spec:
+  resources:
+    - name: "testResource"
+      manifest:
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: "test-ns"
+      discovery:
+        byName: "test-ns"
+`,
+			wantError:      false,
+			wantClient:     "kubernetes",
+			wantMaestroNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var config AdapterTaskConfig
+			err := yaml.Unmarshal([]byte(tt.yaml), &config)
+
+			if tt.wantError {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, config.Spec.Resources, 1)
+
+			resource := config.Spec.Resources[0]
+			assert.Equal(t, tt.wantClient, resource.GetTransportClient())
+
+			if tt.wantMaestroNil {
+				if resource.Transport != nil {
+					assert.Nil(t, resource.Transport.Maestro)
+				}
+			} else {
+				require.NotNil(t, resource.Transport)
+				require.NotNil(t, resource.Transport.Maestro)
+				assert.Equal(t, tt.wantTarget, resource.Transport.Maestro.TargetCluster)
+			}
+		})
+	}
+}
+
+func TestGetTransportClient(t *testing.T) {
+	tests := []struct {
+		name     string
+		resource Resource
+		want     string
+	}{
+		{
+			name:     "nil transport defaults to kubernetes",
+			resource: Resource{Name: "test"},
+			want:     TransportClientKubernetes,
+		},
+		{
+			name:     "empty client defaults to kubernetes",
+			resource: Resource{Name: "test", Transport: &TransportConfig{Client: ""}},
+			want:     TransportClientKubernetes,
+		},
+		{
+			name:     "explicit kubernetes",
+			resource: Resource{Name: "test", Transport: &TransportConfig{Client: "kubernetes"}},
+			want:     TransportClientKubernetes,
+		},
+		{
+			name:     "explicit maestro",
+			resource: Resource{Name: "test", Transport: &TransportConfig{Client: "maestro"}},
+			want:     TransportClientMaestro,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.resource.GetTransportClient())
+		})
+	}
+}
+
+func TestIsMaestroTransport(t *testing.T) {
+	tests := []struct {
+		name     string
+		resource Resource
+		want     bool
+	}{
+		{
+			name:     "nil transport is not maestro",
+			resource: Resource{Name: "test"},
+			want:     false,
+		},
+		{
+			name:     "kubernetes transport is not maestro",
+			resource: Resource{Name: "test", Transport: &TransportConfig{Client: "kubernetes"}},
+			want:     false,
+		},
+		{
+			name:     "maestro transport",
+			resource: Resource{Name: "test", Transport: &TransportConfig{Client: "maestro"}},
+			want:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.resource.IsMaestroTransport())
+		})
+	}
+}
+
+func TestHasManifestWorkRef(t *testing.T) {
+	tests := []struct {
+		name     string
+		resource Resource
+		want     bool
+	}{
+		{
+			name:     "nil transport",
+			resource: Resource{Name: "test"},
+			want:     false,
+		},
+		{
+			name: "maestro with no manifestWork",
+			resource: Resource{
+				Name: "test",
+				Transport: &TransportConfig{
+					Client:  "maestro",
+					Maestro: &MaestroTransportConfig{TargetCluster: "cluster1"},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "maestro with inline manifestWork (no ref)",
+			resource: Resource{
+				Name: "test",
+				Transport: &TransportConfig{
+					Client: "maestro",
+					Maestro: &MaestroTransportConfig{
+						TargetCluster: "cluster1",
+						ManifestWork: map[string]interface{}{
+							"apiVersion": "work.open-cluster-management.io/v1",
+							"kind":       "ManifestWork",
+						},
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "maestro with manifestWork ref",
+			resource: Resource{
+				Name: "test",
+				Transport: &TransportConfig{
+					Client: "maestro",
+					Maestro: &MaestroTransportConfig{
+						TargetCluster: "cluster1",
+						ManifestWork: map[string]interface{}{
+							"ref": "/path/to/manifestwork.yaml",
+						},
+					},
+				},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.resource.HasManifestWorkRef())
+		})
+	}
+}
+
+func TestGetManifestWorkRef(t *testing.T) {
+	tests := []struct {
+		name     string
+		resource Resource
+		want     string
+	}{
+		{
+			name:     "nil transport returns empty",
+			resource: Resource{Name: "test"},
+			want:     "",
+		},
+		{
+			name: "maestro with no manifestWork returns empty",
+			resource: Resource{
+				Name: "test",
+				Transport: &TransportConfig{
+					Client:  "maestro",
+					Maestro: &MaestroTransportConfig{TargetCluster: "cluster1"},
+				},
+			},
+			want: "",
+		},
+		{
+			name: "maestro with inline manifestWork returns empty",
+			resource: Resource{
+				Name: "test",
+				Transport: &TransportConfig{
+					Client: "maestro",
+					Maestro: &MaestroTransportConfig{
+						TargetCluster: "cluster1",
+						ManifestWork: map[string]interface{}{
+							"apiVersion": "work.open-cluster-management.io/v1",
+						},
+					},
+				},
+			},
+			want: "",
+		},
+		{
+			name: "maestro with manifestWork ref",
+			resource: Resource{
+				Name: "test",
+				Transport: &TransportConfig{
+					Client: "maestro",
+					Maestro: &MaestroTransportConfig{
+						TargetCluster: "cluster1",
+						ManifestWork: map[string]interface{}{
+							"ref": "/etc/adapter/manifestwork.yaml",
+						},
+					},
+				},
+			},
+			want: "/etc/adapter/manifestwork.yaml",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.resource.GetManifestWorkRef())
+		})
+	}
+}
+
+func TestLoadConfigWithManifestWorkRef(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a manifestWork template file
+	manifestWorkFile := filepath.Join(tmpDir, "manifestwork.yaml")
+	require.NoError(t, os.WriteFile(manifestWorkFile, []byte(`
+apiVersion: work.open-cluster-management.io/v1
+kind: ManifestWork
+metadata:
+  name: "test-manifestwork"
+spec:
+  workload:
+    manifests: []
+`), 0644))
+
+	adapterYAML := `
+apiVersion: hyperfleet.redhat.com/v1alpha1
+kind: AdapterConfig
+metadata:
+  name: test-adapter
+spec:
+  adapter:
+    version: "0.1.0"
+  clients:
+    hyperfleetApi:
+      baseUrl: "https://test.example.com"
+      timeout: 2s
+    kubernetes:
+      apiVersion: "v1"
+`
+
+	taskYAML := `
+apiVersion: hyperfleet.redhat.com/v1alpha1
+kind: AdapterTaskConfig
+metadata:
+  name: test-adapter
+spec:
+  params:
+    - name: "clusterName"
+      source: "event.name"
+  resources:
+    - name: "testManifestWork"
+      transport:
+        client: "maestro"
+        maestro:
+          targetCluster: "{{ .clusterName }}"
+          manifestWork:
+            ref: "manifestwork.yaml"
+      discovery:
+        bySelectors:
+          labelSelector:
+            app: "test"
+`
+
+	adapterPath, taskPath := createTestConfigFiles(t, tmpDir, adapterYAML, taskYAML)
+
+	config, err := LoadConfig(
+		WithAdapterConfigPath(adapterPath),
+		WithTaskConfigPath(taskPath),
+		WithSkipSemanticValidation(),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+
+	// Verify manifestWork ref was loaded and replaced
+	require.Len(t, config.Spec.Resources, 1)
+	resource := config.Spec.Resources[0]
+	require.NotNil(t, resource.Transport)
+	require.NotNil(t, resource.Transport.Maestro)
+
+	// ManifestWork should be the loaded content, not the ref
+	mw, ok := resource.Transport.Maestro.ManifestWork.(map[string]interface{})
+	require.True(t, ok, "ManifestWork should be a map after loading ref")
+	assert.Equal(t, "work.open-cluster-management.io/v1", mw["apiVersion"])
+	assert.Equal(t, "ManifestWork", mw["kind"])
+
+	// Verify ref is no longer present
+	_, hasRef := mw["ref"]
+	assert.False(t, hasRef, "ref should be replaced with actual content")
+}
+
+func TestLoadConfigWithManifestWorkRefNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	adapterYAML := `
+apiVersion: hyperfleet.redhat.com/v1alpha1
+kind: AdapterConfig
+metadata:
+  name: test-adapter
+spec:
+  adapter:
+    version: "0.1.0"
+  clients:
+    hyperfleetApi:
+      baseUrl: "https://test.example.com"
+      timeout: 2s
+    kubernetes:
+      apiVersion: "v1"
+`
+
+	taskYAML := `
+apiVersion: hyperfleet.redhat.com/v1alpha1
+kind: AdapterTaskConfig
+metadata:
+  name: test-adapter
+spec:
+  resources:
+    - name: "testManifestWork"
+      transport:
+        client: "maestro"
+        maestro:
+          targetCluster: "cluster1"
+          manifestWork:
+            ref: "nonexistent-manifestwork.yaml"
+      discovery:
+        bySelectors:
+          labelSelector:
+            app: "test"
+`
+
+	adapterPath, taskPath := createTestConfigFiles(t, tmpDir, adapterYAML, taskYAML)
+
+	config, err := LoadConfig(
+		WithAdapterConfigPath(adapterPath),
+		WithTaskConfigPath(taskPath),
+		WithSkipSemanticValidation(),
+	)
+	require.Error(t, err)
+	assert.Nil(t, config)
+	assert.Contains(t, err.Error(), "does not exist")
+}
+
+func TestLoadConfigWithInlineManifestWork(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	adapterYAML := `
+apiVersion: hyperfleet.redhat.com/v1alpha1
+kind: AdapterConfig
+metadata:
+  name: test-adapter
+spec:
+  adapter:
+    version: "0.1.0"
+  clients:
+    hyperfleetApi:
+      baseUrl: "https://test.example.com"
+      timeout: 2s
+    kubernetes:
+      apiVersion: "v1"
+`
+
+	taskYAML := `
+apiVersion: hyperfleet.redhat.com/v1alpha1
+kind: AdapterTaskConfig
+metadata:
+  name: test-adapter
+spec:
+  params:
+    - name: "clusterName"
+      source: "event.name"
+  resources:
+    - name: "testManifestWork"
+      transport:
+        client: "maestro"
+        maestro:
+          targetCluster: "{{ .clusterName }}"
+          manifestWork:
+            apiVersion: work.open-cluster-management.io/v1
+            kind: ManifestWork
+            metadata:
+              name: "inline-mw"
+            spec:
+              workload:
+                manifests: []
+      discovery:
+        bySelectors:
+          labelSelector:
+            app: "test"
+`
+
+	adapterPath, taskPath := createTestConfigFiles(t, tmpDir, adapterYAML, taskYAML)
+
+	config, err := LoadConfig(
+		WithAdapterConfigPath(adapterPath),
+		WithTaskConfigPath(taskPath),
+		WithSkipSemanticValidation(),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+
+	// Verify inline manifestWork is preserved as-is
+	require.Len(t, config.Spec.Resources, 1)
+	resource := config.Spec.Resources[0]
+	require.NotNil(t, resource.Transport)
+	require.NotNil(t, resource.Transport.Maestro)
+
+	mw, ok := resource.Transport.Maestro.ManifestWork.(map[string]interface{})
+	require.True(t, ok, "ManifestWork should be a map")
+	assert.Equal(t, "work.open-cluster-management.io/v1", mw["apiVersion"])
+	assert.Equal(t, "ManifestWork", mw["kind"])
 }

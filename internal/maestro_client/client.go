@@ -483,11 +483,13 @@ func (c *Client) ApplyResources(
 		// Convert to result with error
 		for _, r := range resources {
 			resourceResult := &transport_client.ResourceApplyResult{
-				Name:         r.Name,
-				Kind:         r.Manifest.GetKind(),
-				Namespace:    r.Manifest.GetNamespace(),
-				ResourceName: r.Manifest.GetName(),
-				Error:        err,
+				Name:  r.Name,
+				Error: err,
+			}
+			if r.Manifest != nil {
+				resourceResult.Kind = r.Manifest.GetKind()
+				resourceResult.Namespace = r.Manifest.GetNamespace()
+				resourceResult.ResourceName = r.Manifest.GetName()
 			}
 			result.Results = append(result.Results, resourceResult)
 			result.FailedCount++
@@ -501,15 +503,17 @@ func (c *Client) ApplyResources(
 	// Build success results for all resources
 	for _, r := range resources {
 		resourceResult := &transport_client.ResourceApplyResult{
-			Name:         r.Name,
-			Kind:         r.Manifest.GetKind(),
-			Namespace:    r.Manifest.GetNamespace(),
-			ResourceName: r.Manifest.GetName(),
+			Name: r.Name,
 			ApplyResult: &transport_client.ApplyResult{
 				Resource:  r.Manifest,
 				Operation: op,
 				Reason:    fmt.Sprintf("applied via ManifestWork %s/%s", consumerName, work.Name),
 			},
+		}
+		if r.Manifest != nil {
+			resourceResult.Kind = r.Manifest.GetKind()
+			resourceResult.Namespace = r.Manifest.GetNamespace()
+			resourceResult.ResourceName = r.Manifest.GetName()
 		}
 		result.Results = append(result.Results, resourceResult)
 		result.SuccessCount++
@@ -623,6 +627,7 @@ func (c *Client) buildManifestWork(template *workv1.ManifestWork, resources []tr
 	if len(manifests) > 0 {
 		work.Spec.Workload.Manifests = manifests
 	}
+	// Otherwise, use the template's inline manifests as-is
 
 	return work, nil
 }

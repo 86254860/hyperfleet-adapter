@@ -293,10 +293,27 @@ func (c *Condition) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	return nil
 }
 
+// TransportConfig specifies which transport client to use for a resource
+type TransportConfig struct {
+	// Client is the transport client type: "kubernetes" or "maestro"
+	Client string `yaml:"client" validate:"required,oneof=kubernetes maestro"`
+	// Maestro contains maestro-specific transport settings (required when Client is "maestro")
+	Maestro *MaestroTransportConfig `yaml:"maestro,omitempty"`
+}
+
+// MaestroTransportConfig contains maestro-specific transport settings
+type MaestroTransportConfig struct {
+	// TargetCluster is the name of the target cluster (consumer) for ManifestWork delivery
+	TargetCluster string `yaml:"targetCluster" validate:"required"`
+	// ManifestWork is the ManifestWork template, either inline or as a ref to an external file
+	ManifestWork interface{} `yaml:"manifestWork,omitempty"`
+}
+
 // Resource represents a Kubernetes resource configuration
 type Resource struct {
 	Name             string           `yaml:"name" validate:"required,resourcename"`
-	Manifest         interface{}      `yaml:"manifest,omitempty" validate:"required"`
+	Transport        *TransportConfig `yaml:"transport,omitempty"`
+	Manifest         interface{}      `yaml:"manifest,omitempty"`
 	RecreateOnChange bool             `yaml:"recreateOnChange,omitempty"`
 	Discovery        *DiscoveryConfig `yaml:"discovery,omitempty" validate:"required"`
 }

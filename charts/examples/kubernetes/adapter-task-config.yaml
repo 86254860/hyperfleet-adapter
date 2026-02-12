@@ -77,6 +77,8 @@ spec:
   # Resources with valid K8s manifests
   resources:
     - name: "clusterNamespace"
+      transport:
+        client: "kubernetes"
       manifest:
         apiVersion: v1
         kind: Namespace
@@ -98,6 +100,8 @@ spec:
     # in the namespace created above
     # it will require a service account to be created in that namespace as well as a role and rolebinding
     - name: "jobServiceAccount"
+      transport:
+        client: "kubernetes"
       manifest:
         ref: "/etc/adapter/job-serviceaccount.yaml"
       discovery:
@@ -107,6 +111,8 @@ spec:
             hyperfleet.io/cluster-id: "{{ .clusterId }}"
 
     - name: "job_role"
+      transport:
+        client: "kubernetes"
       manifest:
         ref: "/etc/adapter/job-role.yaml"
       discovery:
@@ -118,6 +124,8 @@ spec:
             hyperfleet.io/resource-type: "role"
 
     - name: "job_rolebinding"
+      transport:
+        client: "kubernetes"
       manifest:
         ref: "/etc/adapter/job-rolebinding.yaml"
       discovery:
@@ -129,6 +137,8 @@ spec:
             hyperfleet.io/resource-type: "rolebinding"
 
     - name: "jobNamespace"
+      transport:
+        client: "kubernetes"
       manifest:
         ref: "/etc/adapter/job.yaml"
       discovery:
@@ -143,6 +153,8 @@ spec:
     # and using the same service account as the adapter
 
     - name: "deploymentNamespace"
+      transport:
+        client: "kubernetes"
       manifest:
         ref: "/etc/adapter/deployment.yaml"
       discovery:

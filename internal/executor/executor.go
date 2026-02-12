@@ -51,6 +51,7 @@ func validateExecutorConfig(config *ExecutorConfig) error {
 			return fmt.Errorf("field %s is required", field)
 		}
 	}
+
 	return nil
 }
 
@@ -334,7 +335,7 @@ func (b *ExecutorBuilder) WithAPIClient(client hyperfleet_api.Client) *ExecutorB
 	return b
 }
 
-// WithTransportClient sets the transport client for resource application
+// WithTransportClient sets the transport client for resource application (kubernetes or maestro)
 func (b *ExecutorBuilder) WithTransportClient(client transport_client.TransportClient) *ExecutorBuilder {
 	b.config.TransportClient = client
 	return b

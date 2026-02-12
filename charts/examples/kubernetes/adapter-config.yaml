@@ -11,7 +11,9 @@ spec:
     version: "0.1.0"
 
   # Log the full merged configuration after load (default: false)
-  debugConfig: false
+  debugConfig: true
+  log:
+    level: debug
 
   clients:
     hyperfleetApi:
@@ -22,8 +24,9 @@ spec:
       retryBackoff: exponential
 
     broker:
-      subscriptionId: "example-clusters-subscription"
-      topic: "example-clusters"
+      subscriptionId: "CHANGE_ME"
+      topic: "CHANGE_ME"
 
     kubernetes:
       apiVersion: "v1"
+      #kubeConfigPath: PATH_TO_KUBECONFIG  # for local development

@@ -60,8 +60,7 @@ type ExecutorConfig struct {
 	Config *config_loader.Config
 	// APIClient is the HyperFleet API client
 	APIClient hyperfleet_api.Client
-	// TransportClient is the transport client for applying resources
-	// (supports k8s_client, maestro_client, etc.)
+	// TransportClient is the transport client for applying resources (kubernetes or maestro)
 	TransportClient transport_client.TransportClient
 	// Logger is the logger instance
 	Logger logger.Logger

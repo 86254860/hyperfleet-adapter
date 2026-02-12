@@ -73,6 +73,21 @@ const (
 	FieldValues   = "values" // YAML alias for Value - both "value" and "values" are accepted in YAML
 )
 
+// Transport field names
+const (
+	FieldTransport     = "transport"
+	FieldClient        = "client"
+	FieldMaestro       = "maestro"
+	FieldTargetCluster = "targetCluster"
+	FieldManifestWork  = "manifestWork"
+)
+
+// Transport client types
+const (
+	TransportClientKubernetes = "kubernetes"
+	TransportClientMaestro    = "maestro"
+)
+
 // Resource field names
 const (
 	FieldManifest         = "manifest"
