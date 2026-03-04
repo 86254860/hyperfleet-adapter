@@ -290,8 +290,10 @@ extraVolumes: []
   #     name: custom-configmap
 
 # Pod Disruption Budget
+# PDB protects availability during voluntary disruptions (node maintenance, cluster upgrades).
+# Set minAvailable OR maxUnavailable (not both). Use maxUnavailable with HPA for smoother scaling.
 podDisruptionBudget:
-  enabled: false
+  enabled: true
   # minAvailable: 1
-  # maxUnavailable: 1
+  maxUnavailable: 1
   # unhealthyPodEvictionPolicy: IfHealthyBudget
