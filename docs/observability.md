@@ -82,10 +82,14 @@ The adapter automatically registers Prometheus metrics from the [hyperfleet-brok
 
 ### Available Metrics
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `hyperfleet_broker_messages_consumed_total` | Counter | Total messages consumed from the broker |
-| `hyperfleet_broker_errors_total` | Counter | Total message processing errors (labels: `topic`, `error_type`) |
-| `hyperfleet_broker_message_duration_seconds` | Histogram | Message processing duration |
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `hyperfleet_broker_messages_consumed_total` | Counter | `topic`, `component`, `version` | Total messages consumed from the broker |
+| `hyperfleet_broker_errors_total` | Counter | `topic`, `error_type`, `component`, `version` | Total message processing errors |
+| `hyperfleet_broker_message_duration_seconds` | Histogram | `topic`, `component`, `version` | Message processing duration |
 
 These metrics use the `hyperfleet_broker_` prefix and include the adapter's `component` and `version` labels.
+
+## Alerting and Monitoring
+
+For recommended alerting rules, thresholds, and operational PromQL queries, see [metrics.md](metrics.md).
