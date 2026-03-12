@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hyperfleet-adapter.fullname" . }}
+  labels:
+    {{- include "hyperfleet-adapter.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    {{- range .Values.containerPorts }}
+    - port: {{ .containerPort }}
+      targetPort: {{ .name }}
+      protocol: {{ .protocol | default "TCP" }}
+      name: {{ .name }}
+    {{- end }}
+  selector:
+    {{- include "hyperfleet-adapter.selectorLabels" . | nindent 4 }}

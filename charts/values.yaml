@@ -254,3 +254,32 @@ strategy:
 # Termination grace period in seconds
 terminationGracePeriodSeconds: 30
 tolerations: []
+
+# ServiceMonitor for Prometheus Operator discovery
+# Enables automatic scraping of the adapter's /metrics endpoint.
+# Requires the Prometheus Operator CRDs (monitoring.coreos.com/v1/ServiceMonitor) to be installed.
+# NOTE: Defaults to true. On clusters with Prometheus Operator CRDs, upgrading to this
+# chart version will automatically create a ServiceMonitor. On clusters without the CRDs
+# the resource is silently skipped. Set to false to opt out.
+serviceMonitor:
+  enabled: true
+  # Scrape interval
+  interval: 30s
+  # Scrape timeout (must be less than interval)
+  scrapeTimeout: 10s
+  # Additional labels for ServiceMonitor to match Prometheus selector
+  # Example: release: prometheus
+  labels: {}
+  # Honor labels from the target to avoid overwriting
+  honorLabels: true
+  # Metric relabel configs to apply to samples before ingestion
+  metricRelabeling: []
+  # Namespace selector for cross-namespace monitoring
+  # Example:
+  #   matchNames:
+  #     - hyperfleet-system
+  namespaceSelector: {}
+  # Override the namespace where ServiceMonitor is created (defaults to release namespace).
+  # When set, a namespaceSelector.matchNames is automatically added pointing to the
+  # release namespace so Prometheus can discover the Service across namespaces.
+  namespace: ""

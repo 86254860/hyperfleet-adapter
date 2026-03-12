@@ -152,6 +152,34 @@ test-helm: ## Test Helm charts (lint, template, validate)
 		--set readinessProbe.enabled=true \
 		--set startupProbe.enabled=true > /dev/null
 	@echo "Probes config template OK"
+	@echo ""
+	@echo "Testing template with ServiceMonitor enabled..."
+	@helm template test-release charts/ \
+		--set adapterConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set adapterTaskConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set serviceMonitor.enabled=true \
+		--api-versions monitoring.coreos.com/v1/ServiceMonitor | grep -q 'kind: ServiceMonitor' \
+		|| { echo "ERROR: ServiceMonitor not rendered"; exit 1; }
+	@echo "ServiceMonitor enabled template OK"
+	@echo ""
+	@echo "Testing template with ServiceMonitor enabled but CRD unavailable..."
+	@output=$$(helm template test-release charts/ \
+		--set adapterConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set adapterTaskConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set serviceMonitor.enabled=true) \
+		&& ! echo "$$output" | grep -q 'kind: ServiceMonitor' \
+		|| { echo "ERROR: ServiceMonitor rendered without CRD"; exit 1; }
+	@echo "ServiceMonitor CRD-missing template OK"
+	@echo ""
+	@echo "Testing template with ServiceMonitor disabled..."
+	@output=$$(helm template test-release charts/ \
+		--set adapterConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set adapterTaskConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set serviceMonitor.enabled=false \
+		--api-versions monitoring.coreos.com/v1/ServiceMonitor) \
+		&& ! echo "$$output" | grep -q 'kind: ServiceMonitor' \
+		|| { echo "ERROR: ServiceMonitor rendered while disabled"; exit 1; }
+	@echo "ServiceMonitor disabled template OK"
 
 ##@ Code Quality
 
