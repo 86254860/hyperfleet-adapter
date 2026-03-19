@@ -173,12 +173,22 @@ func (re *ResourceExecutor) executeResource(
 						continue
 					}
 					if _, exists := execCtx.Resources[nestedName]; exists {
+						collisionErr := fmt.Errorf(
+							"nested discovery key collision: %q already exists in context",
+							nestedName,
+						)
+						result.Status = StatusFailed
+						result.Error = collisionErr
+						execCtx.Adapter.ExecutionError = &ExecutionError{
+							Phase:   string(PhaseResources),
+							Step:    resource.Name,
+							Message: collisionErr.Error(),
+						}
 						return result, NewExecutorError(
 							PhaseResources, resource.Name,
-							fmt.Sprintf(
-								"nested discovery key collision: %q already exists in context",
-								nestedName),
-							nil)
+							"duplicate resource context key",
+							collisionErr,
+						)
 					}
 					execCtx.Resources[nestedName] = nestedObj
 				}
